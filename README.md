@@ -6,6 +6,7 @@
 - [ ] Automatically parse discovery endpoint
 - [ ] Improve fuzzing capabilities
     - [ ] URL fuzzer (redirect_uri, request_uri)
+        - [ ] Basic version: just a list of standard mutations
     - [ ] Basic parameter fuzzer:
         - [ ] Change casing
         - [ ] Change 1 character
@@ -19,3 +20,6 @@
         - used for once or multiple times: Substitute the value with an used one and compare the response
         - user-specific: Substitute the value with a fresh one of another user
         - session-specific: Open a new browser and get a fresh value of this parameter to substitute the existing one
+
+
+SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant.org/simplesaml-op/module.php/oidc/.well-known/openid-configuration
