@@ -221,15 +221,15 @@ class ProgressSUL(SUL):
         self.query_count = 0
         self.step_count = 0
         
-        # Estimate: O(n^2 * k * m) where n=states, k=alphabet, m=cex length
-        # This is a rough heuristic, actual may vary
-        self.estimated_queries = (expected_states ** 2) * alphabet_size * max_cex_length
+        avg_query_len = 3
+        expected_rounds = 5
+        self.estimated_steps = expected_states * alphabet_size * avg_query_len * expected_rounds
         
         self.pbar = tqdm(
-            total=self.estimated_queries,
+            total=self.estimated_steps,
             desc="Learning",
-            unit="queries",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} queries [{elapsed}<{remaining}]"
+            unit="steps",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} steps [{elapsed}<{remaining}]"
         )
     
     def pre(self):
@@ -240,19 +240,15 @@ class ProgressSUL(SUL):
     
     def step(self, letter):
         self.step_count += 1
-        return self.wrapped_sul.step(letter)
-    
-    def query(self, word):
-        self.query_count += 1
         self.pbar.update(1)
         
-        # If we exceed estimate, increase the total dynamically
-        if self.query_count > self.pbar.total:
-            self.pbar.total = int(self.query_count * 1.5)
+        # Dynamically extend if we exceed estimate
+        if self.step_count > self.pbar.total:
+            self.pbar.total = int(self.step_count * 1.3)
             self.pbar.refresh()
+
+        return self.wrapped_sul.step(letter)
         
-        return self.wrapped_sul.query(word)
-    
     def close_progress(self):
         self.pbar.close()
 
@@ -575,7 +571,7 @@ def learn_model(input_al, sul, expected_states=10, show_progress=True):
     return learned_model
 
 
-def fuzz_model(fuzzing_sul, learned_model):
+def fuzz_model(input_al, fuzzing_sul, learned_model):
     eo = StatePrefixEqOracle(input_al, fuzzing_sul, walks_per_state=20, walk_len=10)
     cex = eo.find_cex(learned_model)
     if cex:
@@ -651,6 +647,7 @@ if __name__ == "__main__":
     if not args.only_learn:
         if args.target == 'oauth':
             fuzzing_sul = FuzzingSUL(auth_server_url=args.auth_server_url, client_url=args.client_url, proxy=args.proxy)
+            fuzz_model(input_al, fuzzing_sul, learned_model)
         elif args.target == 'sspoidc':
             fuzzing_sul = FuzzingSSPOIDCSUL(auth_server_url=args.auth_server_url, client_url=args.client_url, proxy=args.proxy)    
-        fuzz_model(fuzzing_sul, learned_model)
+            fuzz_model(input_al_sspoidc, fuzzing_sul, learned_model)
