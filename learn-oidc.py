@@ -64,14 +64,16 @@ def abstract_output_sspoidc(r: requests.Response):
         return f"({r.status_code}, 'Location: {location}')"
     
     if str(r.status_code).startswith('5') or str(r.status_code).startswith('4') or str(r.status_code).startswith('2'):
+        return f"Error"
         # Extract content of <p class="message-box error">...</p>
-        match = re.search(r'<p class="message-box error">(.*?)</p>', text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        match = re.search(r'<title>(.*?)</title>', text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        text = "OK" if str(r.status_code).startswith('2') else "Error"
+        # match = re.search(r'<p class="message-box error">(.*?)</p>', text, re.DOTALL)
+        # if match:
+        #     text = match.group(1).strip()
+        # match = re.search(r'<title>(.*?)</title>', text, re.DOTALL)
+        # if match:
+        #     text = match.group(1).strip()
+        # text = "OK" if str(r.status_code).startswith('2') else "Error"
+
     
     # Remove all double quotes, as this breaks the .dot parsing
     text = text.replace('"', '')
@@ -327,12 +329,23 @@ input_al = ["client_sso_login",
             "authserver_login_invalid_credentials"
             ]
 
+input_al_sspoidc = ["client_sso_login", 
+            "client_callback", 
+            "client_callback_invalid", 
+            "client_callback_error", 
+            "authserver_authorize",
+            "authserver_authorize_invalid",
+            "authserver_login",
+            "authserver_login_invalid"
+            ]
+
 
 class SSPOIDCSUL(SUL):
-    def __init__(self, auth_server_url, client_url, proxy=None):
+    def __init__(self, auth_server_url, client_url, proxy=None, user="student", password="studentpass"):
         super().__init__()
         self.CLIENT_URL=client_url # https://fuzz1.incubator.geant.org/simplesaml-rp
         self.AUTH_SERVER_URL=auth_server_url # https://fuzz1.incubator.geant.org/simplesaml-op
+        self.proxy = proxy
         if proxy:
             self.proxies = {
                 "http": proxy,
@@ -340,6 +353,8 @@ class SSPOIDCSUL(SUL):
             }
         else:
             self.proxies = None
+        self.user = user
+        self.password = password
         self.s = requests.Session()
 
     def pre(self):
@@ -386,8 +401,8 @@ class SSPOIDCSUL(SUL):
                 r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
                 return abstract_output_sspoidc(r)
             
-            case "client_callback_invalid_state":
-                url = f"{self.CLIENT_URL}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state=invalidstate"
+            case "client_callback_invalid":
+                url = f"{self.CLIENT_URL}/module.php/authoauth2/linkback?code=invalidcode&state=invalidstate"
                 r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
                 return abstract_output_sspoidc(r)
             
@@ -403,22 +418,8 @@ class SSPOIDCSUL(SUL):
 
                 return abstract_output_sspoidc(r)
             
-            case "authserver_authorize_invalid_client":
-                url = f"{self.AUTH_SERVER_URL}/module.php/oidc/authorization?client_id=invalidclient&redirect_uri={self.parsed_params.get('redirect_uri')}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}&scope={self.parsed_params.get('scope')}&approval_prompt={self.parsed_params.get('approval_prompt')}"
-                r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
-                self._parse_redirect_params(r)
-
-                return abstract_output_sspoidc(r)
-            
-            case "authserver_authorize_invalid_redirect_uri":
-                url = f"{self.AUTH_SERVER_URL}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}&scope={self.parsed_params.get('scope')}&approval_prompt={self.parsed_params.get('approval_prompt')}"
-                r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
-                self._parse_redirect_params(r)
-
-                return abstract_output_sspoidc(r)
-            
-            case "authserver_authorize_unsupported_response_type":
-                url = f"{self.AUTH_SERVER_URL}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&redirect_uri={self.parsed_params.get('redirect_uri')}&response_type=unsupported&state={self.parsed_params.get('state')}&scope={self.parsed_params.get('scope')}&approval_prompt={self.parsed_params.get('approval_prompt')}"
+            case "authserver_authorize_invalid":
+                url = f"{self.AUTH_SERVER_URL}/module.php/oidc/authorization?client_id=invalidclient&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
                 r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
                 self._parse_redirect_params(r)
 
@@ -426,14 +427,14 @@ class SSPOIDCSUL(SUL):
             
             case "authserver_login":
                 url = f"{self.AUTH_SERVER_URL}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
-                r = make_request_with_retry(self.s, 'POST', url, data={'username': 'student', 'password': 'studentpass'}, proxies=self.proxies, verify=False)
+                r = make_request_with_retry(self.s, 'POST', url, data={'username': self.user, 'password': self.password}, proxies=self.proxies, verify=False)
                 self._parse_redirect_params(r)
                 
                 return abstract_output_sspoidc(r)
             
-            case "authserver_login_invalid_credentials":
+            case "authserver_login_invalid":
                 url = f"{self.AUTH_SERVER_URL}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
-                r = make_request_with_retry(self.s, 'POST', url, data={'username': 'student', 'password': 'wrongpassword'}, proxies=self.proxies, verify=False)
+                r = make_request_with_retry(self.s, 'POST', url, data={'username': self.user, 'password': 'wrongpassword'}, proxies=self.proxies, verify=False)
                 self._parse_redirect_params(r)
 
                 return abstract_output_sspoidc(r)
@@ -442,12 +443,14 @@ class SSPOIDCSUL(SUL):
 class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     def __init__(self, auth_server_url, client_url, proxy=None):
         super().__init__(auth_server_url=auth_server_url, client_url=client_url, proxy=proxy)
-        self.concrete_trace = []  # Stores concrete fuzzed values for reproducibility
+        self.concrete_inputs = []  # Stores concrete fuzzed values for reproducibility
+        self.concrete_outputs = []
         self.used_params = {}
 
     def pre(self):
         super().pre()
-        self.concrete_trace = []  # Reset trace on each new run
+        self.concrete_inputs = []  # Reset trace on each new run
+        self.concrete_outputs = []
         self.used_params = {}
     
     def _parse_redirect_params(self, r: requests.Response):
@@ -467,26 +470,22 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
                     self.parsed_params[key] = value
     
     def _get_fresh_state(self):
-        url = f"{self.CLIENT_URL}/../test-oidc.php"
-        temp_s = requests.Session()
-        r = make_request_with_retry(temp_s, 'GET', url, proxies=self.proxies, verify=False)
-        temp_s.close()
-        location = r.headers.get('Location')
-        if not location:
-            return None
-        parsed_url = urlparse(location)
-        # Manually parse without URL decoding
-        query_params = {}
-        if parsed_url.query:
-            for param in parsed_url.query.split('&'):
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    query_params[key] = value
-        return query_params.get('state')
-    
+        tmp_sul = SSPOIDCSUL(auth_server_url=self.AUTH_SERVER_URL, client_url=self.CLIENT_URL, proxy=self.proxy)
+        tmp_sul.pre()
+        tmp_sul.step("client_sso_login")
+        other_state = tmp_sul.parsed_params.get('state')
+        tmp_sul.post()
+        return other_state
+        
     def _get_other_user_state(self):
-        # TODO
-        pass
+        tmp_sul = SSPOIDCSUL(auth_server_url=self.AUTH_SERVER_URL, client_url=self.CLIENT_URL, proxy=self.proxy, user="employee", password="employeepass")
+        tmp_sul.pre()
+        tmp_sul.step("client_sso_login")
+        tmp_sul.step("authserver_login")
+        tmp_sul.step("authserver_authorize")
+        other_state = tmp_sul.parsed_params.get('state')
+        tmp_sul.post()
+        return other_state
 
     def _fuzz_redirect_uri(self, redirect_uri: str) -> str:
         """Fuzz the redirect_uri with various bypass techniques."""
@@ -497,65 +496,39 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
 
         return parsed_url.scheme + "://" + parsed_url.netloc + ".evil.com"
 
-    def trace_with_concrete_values(self, letter, concrete_value):
-        """Replay a step with specific concrete values for reproducibility."""
-        match letter:
-            case "client_callback_invalid_state":
-                if concrete_value and 'fuzzed_state' in concrete_value:
-                    fuzzed_state = concrete_value['fuzzed_state']
-                else:
-                    fuzzed_state = ""
-                    randval = random.randint(1, 2)
-                    if randval == 1:
-                        # Use previously used state value
-                        fuzzed_state = random.choice(self.used_params.get('state', ['invalidstate']))
-                    elif randval == 2:
-                        # Get a fresh valid state from a new SSO login
-                        fresh_state = self._get_fresh_state()
-                        fuzzed_state = fresh_state if fresh_state else "invalidstate"
-
-                url = f"{self.CLIENT_URL}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state={fuzzed_state}"
-                r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
-                return abstract_output_sspoidc(r)
-
-            case "authserver_authorize_invalid_redirect_uri":
-                if concrete_value and 'fuzzed_redirect_uri' in concrete_value:
-                    fuzzed_uri = concrete_value['fuzzed_redirect_uri']
-                else:
-                    fuzzed_uri = self._fuzz_redirect_uri(self.parsed_params.get('redirect_uri'))
-                
-                url = f"{self.AUTH_SERVER_URL}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&redirect_uri={fuzzed_uri}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}"
-                r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
-                self._parse_redirect_params(r)
-                return abstract_output_sspoidc(r)
-            
-            case _:
-                # For non-fuzzed inputs, use parent implementation
-                return super().step(letter)
-    
     def step(self, letter):
         """Execute a step and record the concrete fuzzed value."""
         concrete_value = None
         
         match letter:
-            case "client_callback_invalid_state":
-                fuzzed_state = ""
-                randval = random.randint(1, 2)
+            case "client_callback_invalid":
+                fuzzed_state = {}
+                randval = random.randint(1, 3)
                 if randval == 1:
                     # Use previously used state value
-                    fuzzed_state = random.choice(self.used_params.get('state', ['invalidstate']))
+                    fuzzed_state = {"fuzzed_state_previously_used": random.choice(self.used_params.get('state', ['invalidstate']))}
                 elif randval == 2:
                     # Get a fresh valid state from a new SSO login
                     fresh_state = self._get_fresh_state()
-                    fuzzed_state = fresh_state if fresh_state else "invalidstate"
+                    if not fresh_state:
+                        fresh_state = "invalidstate"
+                    fuzzed_state = {"fuzzed_state_fresh": fresh_state}
+                elif randval == 3:
+                    # Get a valid state from a different user
+                    other_user_state = self._get_other_user_state()
+                    if not other_user_state:
+                        other_user_state = "invalidstate"
+                    fuzzed_state = {"fuzzed_state_other_user": other_user_state}
 
                 url = f"{self.CLIENT_URL}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state={fuzzed_state}"
                 r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
 
-                self.concrete_trace.append({'fuzzed_state': fuzzed_state})
-                return abstract_output_sspoidc(r)
+                self.concrete_inputs.append({'fuzzed_state': fuzzed_state})
+                output = abstract_output_sspoidc(r)
+                self.concrete_outputs.append(output)
+                return output
     
-            case "authserver_authorize_invalid_redirect_uri":
+            case "authserver_authorize_invalid":
                 # This is the fuzzed input - generate and record concrete value
                 fuzzed_uri = self._fuzz_redirect_uri(self.parsed_params.get('redirect_uri'))
                 concrete_value = {'fuzzed_redirect_uri': fuzzed_uri}
@@ -564,16 +537,20 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
                 r = make_request_with_retry(self.s, 'GET', url, proxies=self.proxies, verify=False)
                 self._parse_redirect_params(r)
                 
-                self.concrete_trace.append(concrete_value)
-                return abstract_output_sspoidc(r)
+                self.concrete_inputs.append(concrete_value)
+                output = abstract_output_sspoidc(r)
+                self.concrete_outputs.append(output)
+                return output
             
             case _:
                 # For non-fuzzed inputs, use parent implementation
-                self.concrete_trace.append(None)  # No fuzzing for this step
-                return super().step(letter)
+                self.concrete_inputs.append(None)  # No fuzzing for this step
+                output = super().step(letter)
+                self.concrete_outputs.append(output)
+                return output
 
 
-def learn_model(sul, expected_states=10, show_progress=True):
+def learn_model(input_al, sul, expected_states=10, show_progress=True):
     if show_progress:
         progress_sul = ProgressSUL(
             sul, 
@@ -603,22 +580,24 @@ def fuzz_model(fuzzing_sul, learned_model):
     cex = eo.find_cex(learned_model)
     if cex:
         print("Counterexample found")
-        print("Inputs values", cex)
-        print("Concrete values", fuzzing_sul.concrete_trace)
+        print("Inputs values:")
+        for val in cex:
+            print("\t" + val)
+        print("Concrete values:")
+        for concrete in fuzzing_sul.concrete_inputs:
+            print("\t" + str(concrete))
 
-        # Save concrete trace before resetting
-        saved_concrete_trace = fuzzing_sul.concrete_trace.copy()
+        output_sul = fuzzing_sul.concrete_outputs
 
         learned_model.reset_to_initial()
         output_base = [learned_model.step(i) for i in cex]
-        
-        fuzzing_sul.post()
-        fuzzing_sul.pre()
 
-        output_sul = [fuzzing_sul.trace_with_concrete_values(i, c) for i, c in zip(cex, saved_concrete_trace)]
-
-        print("Model Output", output_base)
-        print("SUL Output", output_sul)
+        print("Model Output")
+        for output in output_base:
+            print("\t" + str(output))
+        print("SUL Output")
+        for output in output_sul:
+            print("\t" + str(output))
 
 
 def parse_discovery_endpoint(discovery_url: str):
@@ -655,12 +634,14 @@ if __name__ == "__main__":
     else:
         if args.target == 'oauth':
             sul = OAuthSUL(auth_server_url=args.auth_server_url, client_url=args.client_url, proxy=args.proxy)
+            learned_model = learn_model(input_al, sul, expected_states=args.expected_states, show_progress=not args.no_progress)
         elif args.target == 'sspoidc':
             sul = SSPOIDCSUL(auth_server_url=args.auth_server_url, client_url=args.client_url, proxy=args.proxy)
+            learned_model = learn_model(input_al_sspoidc, sul, expected_states=args.expected_states, show_progress=not args.no_progress)
         else:
             raise ValueError(f"Unsupported target: {args.target}")
 
-        learned_model = learn_model(sul, expected_states=args.expected_states, show_progress=not args.no_progress)
+
         if args.save_model:
             save_automaton_to_file(learned_model, args.save_model)
     
