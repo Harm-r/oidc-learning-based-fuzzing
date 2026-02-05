@@ -26,5 +26,14 @@ SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant
 
 Vragen:
 - [ ] Restart session and parameters when init flow is called?
+    - Call init only once at the start in pre()
 - [ ] Should the authorization code be session specific? Authorization Code Injection?  https://www.rfc-editor.org/rfc/rfc9700.html#section-4.5
 - [ ] Go over other properties
+
+Remove progress bar? 
+Read https://blog.syss.com/posts/browser_swapping/
+Document all found implementation bugs for developers (definitely document browser swapping attack!)
+Create cleaned-up version of state machines
+Type juggling: state[] and state=1&state=2, also in the ID token, in json duplicating as well
+Test request parameter (also duplicating parameters)
+https://pushsecurity.com/blog/consentfix#id-how-consentfix-works

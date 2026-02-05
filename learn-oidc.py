@@ -337,10 +337,10 @@ class SSPOIDCSUL(BaseSUL):
         match letter:
             case "client_sso_login":
                 # Clear session and parsed params so that we don't carry over the old parameters from previous steps (like mismatching state)
-                self.s = requests.Session()
-                self.parsed_params = {
-                    'response_type': 'code', # Default response type
-                }
+                # self.s = requests.Session()
+                # self.parsed_params = {
+                #     'response_type': 'code', # Default response type
+                # }
                 url = f"{self.rp_url}/../test-oidc.php"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
