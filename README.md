@@ -23,3 +23,8 @@
 
 
 SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant.org/simplesaml-op/module.php/oidc/.well-known/openid-configuration
+
+Vragen:
+- [ ] Restart session and parameters when init flow is called?
+- [ ] Should the authorization code be session specific? Authorization Code Injection?  https://www.rfc-editor.org/rfc/rfc9700.html#section-4.5
+- [ ] Go over other properties

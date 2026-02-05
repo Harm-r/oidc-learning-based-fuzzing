@@ -295,6 +295,7 @@ class SSPOIDCSUL(BaseSUL):
             "authserver_login",
             "authserver_login_invalid"
         ]
+        self.used_params = {}
 
     def _abstract_output(self, r: requests.Response):
         text = r.text
@@ -345,6 +346,8 @@ class SSPOIDCSUL(BaseSUL):
             
             case "client_callback":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state={self.parsed_params.get('state')}"
+                self.used_params['code'] = self.parsed_params.get('code')
+                self.used_params['state'] = self.parsed_params.get('state')
                 return self._make_request('GET', url)
             
             case "client_callback_invalid":
@@ -353,6 +356,7 @@ class SSPOIDCSUL(BaseSUL):
             
             case "client_callback_error":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?error=error&state={self.parsed_params.get('state')}"
+                self.used_params['state'] = self.parsed_params.get('state')
                 return self._make_request('GET', url)
             
             case "authserver_authorize":
@@ -365,10 +369,12 @@ class SSPOIDCSUL(BaseSUL):
             
             case "authserver_login":
                 url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
+                self.used_params['AuthState'] = self.parsed_params.get('AuthState')
                 return self._make_request('POST', url, parse_redirect_params=True, data={'username': self.user, 'password': self.password})
             
             case "authserver_login_invalid":
                 url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
+                self.used_params['AuthState'] = self.parsed_params.get('AuthState')
                 return self._make_request('POST', url, parse_redirect_params=True, data={'username': self.user, 'password': 'wrongpassword'})
 
 
@@ -396,9 +402,8 @@ class Fuzzer:
     def __init__(self, sul: BaseSUL):
         self.sul = sul
         # Cache for values from other users/sessions
-        self.other_user_values: Dict[str, str] = {}
-        self.other_session_values: Dict[str, str] = {}
-        self.used_values: Dict[str, List[str]] = {}  # Track previously used values
+        self.other_user_params: Dict[str, str] = {}
+        self.other_session_params: Dict[str, str] = {}
     
     def fuzz_parameter(self, param_name: str, original_value: Optional[str]) -> Optional[str]:
         properties = OIDC_PARAMETER_PROPERTIES.get(param_name)
@@ -419,7 +424,7 @@ class Fuzzer:
 
         strategy = random.choice(fuzz_strategies)
 
-        return strategy(param_name, original_value)
+        return strategy(param_name, original_value), strategy.__name__
 
     def _test_constant_value(self, param_name: str, original_value: str) -> str:
         """Test if a constant parameter can be changed."""
@@ -431,8 +436,8 @@ class Fuzzer:
     
     def _test_reuse_value(self, param_name: str, original_value: str) -> str:
         """Test reusing a value that should be single-use."""
-        if param_name in self.used_values and self.used_values[param_name]:
-            return self.used_values[param_name]
+        if param_name in self.sul.used_params and self.sul.used_params[param_name]:
+            return self.sul.used_params[param_name]
         return original_value
     
     def _test_other_user_value(self, param_name: str, original_value: str) -> str:
@@ -484,7 +489,6 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     
     def post(self):
         super().post()
-        self.fuzzer.used_values = self.parsed_params.copy()
 
     def _fuzz_redirect_uri(self, redirect_uri: str) -> str:
         """Fuzz the redirect_uri with various bypass techniques."""
@@ -497,14 +501,14 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     
     def _build_fuzzed_url(self, base_url: str, params: Dict[str, str], fuzz_param: Optional[str] = None) -> str:
         if fuzz_param and fuzz_param in params:
-            fuzzed_value = self.fuzzer.fuzz_parameter(fuzz_param, params[fuzz_param])
+            fuzzed_value, strategy = self.fuzzer.fuzz_parameter(fuzz_param, params[fuzz_param])
             if fuzzed_value is not None:
                 params[fuzz_param] = fuzzed_value
             else:
                 del params[fuzz_param]  # Omit parameter
         
         query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-        return f"{base_url}?{query_string}"
+        return f"{base_url}?{query_string}", strategy
 
     def step(self, letter):
         """Execute a step and record the concrete fuzzed value."""
@@ -522,8 +526,10 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         match letter:
             case "client_callback_invalid":
                 fuzz_param = random.choice(weighted_choices)
-                url = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
-                changed_value = {f'fuzzed_{fuzz_param}': params.get(fuzz_param, None)}
+                url, strategy = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
+                if fuzz_param == 'state':
+                    self.used_params['state'] = params.get('state', None)
+                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': params.get(fuzz_param, None)}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url)
     
