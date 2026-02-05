@@ -346,9 +346,12 @@ class SSPOIDCSUL(BaseSUL):
             
             case "client_callback":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state={self.parsed_params.get('state')}"
-                self.used_params['code'] = self.parsed_params.get('code')
-                self.used_params['state'] = self.parsed_params.get('state')
-                return self._make_request('GET', url)
+                out = self._make_request('GET', url)
+                if out != "Error":
+                    self.used_params['code'] = self.parsed_params.get('code')
+                    # TODO: should the state also be invalidated for errors?
+                    self.used_params['state'] = self.parsed_params.get('state')
+                return out
             
             case "client_callback_invalid":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?code=invalidcode&state=invalidstate"
@@ -356,7 +359,8 @@ class SSPOIDCSUL(BaseSUL):
             
             case "client_callback_error":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?error=error&state={self.parsed_params.get('state')}"
-                self.used_params['state'] = self.parsed_params.get('state')
+                # TODO: should the state be invalidated here? SSP OIDC seems to accept it
+                # self.used_params['state'] = self.parsed_params.get('state')
                 return self._make_request('GET', url)
             
             case "authserver_authorize":
@@ -364,7 +368,7 @@ class SSPOIDCSUL(BaseSUL):
                 return self._make_request('GET', url, parse_redirect_params=True)
             
             case "authserver_authorize_invalid":
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
+                url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&redirect_uri=invalidredirecturi&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
             case "authserver_login":
@@ -384,6 +388,7 @@ class Prop(Enum):
     ONCE = auto()
     USER_SPECIFIC = auto()
     SESSION_SPECIFIC = auto()
+    URL = auto()
 
 
 # Parameter property mappings based on OAuth 2.0 / OIDC spec
@@ -391,10 +396,9 @@ OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
     "state": {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC},
     "code": {Prop.MANDATORY, Prop.ONCE},
     "client_id": {Prop.CONSTANT, Prop.MANDATORY},
-    "redirect_uri": {Prop.CONSTANT},
+    "redirect_uri": {Prop.CONSTANT, Prop.URL},
     "response_type": {Prop.CONSTANT, Prop.MANDATORY},
     "scope": {Prop.CONSTANT, Prop.MANDATORY},
-    "approval_prompt": {Prop.CONSTANT}
 }
 
 
@@ -421,6 +425,8 @@ class Fuzzer:
             fuzz_strategies.append(self._test_other_user_value)
         if Prop.SESSION_SPECIFIC in properties:
             fuzz_strategies.append(self._test_other_session_value)
+        if Prop.URL in properties:
+            fuzz_strategies.append(self._test_url)
 
         strategy = random.choice(fuzz_strategies)
 
@@ -469,6 +475,15 @@ class Fuzzer:
             return other_value
         else:
             raise ValueError(f"No other session value found for parameter: {param_name}")
+    
+    def _test_url(self, param_name: str, original_value: str) -> str:
+        """Fuzz URLS like the redirect_uri with various bypass techniques."""
+        if not original_value:
+            return "https://evil.com/callback"
+        
+        parsed_url = urlparse(original_value)
+
+        return parsed_url.scheme + "://" + parsed_url.netloc + ".evil.com"
 
 
 class FuzzingSSPOIDCSUL(SSPOIDCSUL):
@@ -480,7 +495,7 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         # Define which parameters are used in each input letter
         self.letter_params = {
             "client_callback_invalid": ["code", "state"],
-            "authserver_authorize_invalid": ["client_id", "response_type", "state", "scope", "approval_prompt"]
+            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "state", "scope"]
         }
 
     def pre(self):
@@ -489,15 +504,6 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     
     def post(self):
         super().post()
-
-    def _fuzz_redirect_uri(self, redirect_uri: str) -> str:
-        """Fuzz the redirect_uri with various bypass techniques."""
-        if not redirect_uri:
-            return "https://evil.com/callback"
-        
-        parsed_url = urlparse(redirect_uri)
-
-        return parsed_url.scheme + "://" + parsed_url.netloc + ".evil.com"
     
     def _build_fuzzed_url(self, base_url: str, params: Dict[str, str], fuzz_param: Optional[str] = None) -> str:
         if fuzz_param and fuzz_param in params:
@@ -522,22 +528,19 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         for key in params:
             props = OIDC_PARAMETER_PROPERTIES.get(key)
             weighted_choices.extend([key] * len(props))  # Weight by number of properties
-        
+        if weighted_choices:
+            fuzz_param = random.choice(weighted_choices)
+
         match letter:
             case "client_callback_invalid":
-                fuzz_param = random.choice(weighted_choices)
                 url, strategy = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
-                if fuzz_param == 'state':
-                    self.used_params['state'] = params.get('state', None)
                 changed_value = {f'fuzzed_{fuzz_param}_{strategy}': params.get(fuzz_param, None)}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url)
     
             case "authserver_authorize_invalid":
-                fuzzed_uri = self._fuzz_redirect_uri(self.parsed_params.get('redirect_uri'))
-                changed_value = {'fuzzed_redirect_uri': fuzzed_uri}
-                
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&redirect_uri={fuzzed_uri}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}"
+                url, strategy = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param=fuzz_param)
+                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': params.get(fuzz_param, None)}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url, parse_redirect_params=True)
             

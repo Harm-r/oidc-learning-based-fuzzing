@@ -37,3 +37,5 @@ Create cleaned-up version of state machines
 Type juggling: state[] and state=1&state=2, also in the ID token, in json duplicating as well
 Test request parameter (also duplicating parameters)
 https://pushsecurity.com/blog/consentfix#id-how-consentfix-works
+
+TODO: should the state be invalidated in client_callback_error? SSP seems to accept it
