@@ -5,14 +5,11 @@
 - [x] Expand to OIDC flow
 - [ ] Automatically parse discovery endpoint
 - [ ] Improve fuzzing capabilities
-    - [ ] URL fuzzer (redirect_uri, request_uri)
-        - [ ] Basic version: just a list of standard mutations
+    - [x] URL fuzzer (redirect_uri, request_uri)
+        - [x] Basic version: just a list of standard mutations
+        - [x] Maybe use https://portswigger.net/web-security/ssrf/url-validation-bypass-cheat-sheet instead of redirect-fuzzer?
     - [ ] Basic parameter fuzzer:
-        - [ ] Change casing
-        - [ ] Change 1 character
-        - [ ] Append a character
-        - [ ] Append a special character
-        - [ ] Parameter pollution: duplicate, two different parameters, maybe with arrays? redirect_uri[0]=x,redirect_uri[1]=y?
+        - [x] Parameter pollution: duplicate, two different parameters, maybe with arrays? redirect_uri[0]=x,redirect_uri[1]=y?
     - [ ] JWT fuzzer (use jwt tool as inspiration)
     - [x] OAuthTester like approach: define properties of parameters and fuzz based on these properties:
         - constant: Compare the values between different sessions and users

@@ -8,7 +8,7 @@ import datetime
 import random
 from enum import Enum, auto
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Callable, Set
+from typing import Dict, List, Optional, Callable, Set, Tuple
 
 from tqdm import tqdm
 from aalpy.base import SUL
@@ -104,8 +104,8 @@ class BaseSUL(SUL):
     def _abstract_output(self, r: requests.Response):
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def _make_request(self, method, url, parse_redirect_params=False, **kwargs):
-        r = make_request_with_retry(self.s, method, url, proxies=self.proxies, verify=False, **kwargs)
+    def _make_request(self, method, url, parse_redirect_params=False, headers=None, **kwargs):
+        r = make_request_with_retry(self.s, method, url, proxies=self.proxies, verify=False, headers=headers, **kwargs)
         if parse_redirect_params:
             self._parse_redirect_params(r)
         self.concrete_inputs.append(pretty_print_request(r.request))
@@ -300,6 +300,9 @@ class SSPOIDCSUL(BaseSUL):
     def _abstract_output(self, r: requests.Response):
         text = r.text
         
+        if str(r.status_code).startswith('3') and "error" in r.headers.get('Location'):
+            return f"Error"
+
         if str(r.status_code).startswith('3'):
             location = r.headers.get('Location', '')
             # Abstract state parameter (typically random alphanumeric)
@@ -403,18 +406,40 @@ OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
 
 
 class Fuzzer:
-    def __init__(self, sul: BaseSUL):
+    def __init__(self, sul: BaseSUL, fuzz_strategies: Optional[List[str]] = None):
         self.sul = sul
+        self.fuzz_strategies = fuzz_strategies
         # Cache for values from other users/sessions
         self.other_user_params: Dict[str, str] = {}
         self.other_session_params: Dict[str, str] = {}
+        self.strategies = {
+            "constant": self._test_constant_value,
+            "omit": self._test_omit_parameter,
+            "reuse": self._test_reuse_value,
+            "other_user": self._test_other_user_value,
+            "other_session": self._test_other_session_value,
+            "url": self._test_url,
+            "type_juggling": self._test_type_juggling,
+            "duplication_after": self._test_duplication_after,
+            "duplication_before": self._test_duplication_before
+        }
+        self.fuzz_strategies = [self.strategies[s] for s in fuzz_strategies] if fuzz_strategies else list(self.strategies.values())
+
+
+        self.default_strategies = [
+            self._test_type_juggling,
+            self._test_duplication_after,
+            # self._test_duplication_before # Only last value is used by SSP OIDC module
+        ]
     
-    def fuzz_parameter(self, param_name: str, original_value: Optional[str]) -> Optional[str]:
+    def fuzz_parameter(self, param_name: str, original_value: Optional[str]) -> Tuple[str, str]:
         properties = OIDC_PARAMETER_PROPERTIES.get(param_name)
+
         if not properties:
-            return "invalid" + param_name  # Unknown parameter, return generic invalid value
-        
-        fuzz_strategies = []
+            return f"{param_name}=invalid" + param_name, "invalid"  # Unknown parameter, return generic invalid value
+
+        fuzz_strategies = self.default_strategies.copy()
+
         if Prop.CONSTANT in properties:
             fuzz_strategies.append(self._test_constant_value)
         if Prop.MANDATORY in properties:
@@ -428,23 +453,25 @@ class Fuzzer:
         if Prop.URL in properties:
             fuzz_strategies.append(self._test_url)
 
+        fuzz_strategies = list(set(fuzz_strategies).intersection(self.fuzz_strategies))
+
         strategy = random.choice(fuzz_strategies)
 
         return strategy(param_name, original_value), strategy.__name__
 
     def _test_constant_value(self, param_name: str, original_value: str) -> str:
         """Test if a constant parameter can be changed."""
-        return original_value[:-1] + "X"  # Simple modification to make it invalid
+        return f"{param_name}={original_value[:-1]}X"  # Simple modification to make it invalid
 
     def _test_omit_parameter(self, param_name: str, original_value: str) -> None:
         """Test omitting a mandatory parameter."""
-        return None
+        return ""
     
     def _test_reuse_value(self, param_name: str, original_value: str) -> str:
         """Test reusing a value that should be single-use."""
         if param_name in self.sul.used_params and self.sul.used_params[param_name]:
-            return self.sul.used_params[param_name]
-        return original_value
+            return f"{param_name}={self.sul.used_params[param_name]}"
+        return f"{param_name}={original_value}"
     
     def _test_other_user_value(self, param_name: str, original_value: str) -> str:
         """Test using a value from a different user."""
@@ -457,7 +484,7 @@ class Fuzzer:
         other_value = tmp_sul.parsed_params.get(param_name)
         tmp_sul.post()
         if other_value:
-            return other_value
+            return f"{param_name}={other_value}"
         else:
             raise ValueError(f"No other user value found for parameter: {param_name}")
 
@@ -472,30 +499,58 @@ class Fuzzer:
         other_value = tmp_sul.parsed_params.get(param_name)
         tmp_sul.post()
         if other_value:
-            return other_value
+            return f"{param_name}={other_value}"
         else:
             raise ValueError(f"No other session value found for parameter: {param_name}")
     
     def _test_url(self, param_name: str, original_value: str) -> str:
         """Fuzz URLS like the redirect_uri with various bypass techniques."""
         if not original_value:
-            return "https://evil.com/callback"
+            return f"{param_name}=https://evil.com/callback"
         
         parsed_url = urlparse(original_value)
 
-        return parsed_url.scheme + "://" + parsed_url.netloc + ".evil.com"
+        with open('portswigger_url_validation_bypass.txt', 'r') as f:
+            payloads = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        
+        payload = random.choice(payloads)
 
+        payload = payload.replace("SCHEME", parsed_url.scheme)
+        payload = payload.replace("ALLOWED", parsed_url.netloc)
+        payload = payload.replace("ATTACKER", "evil.com")
+        payload = payload.replace("/PATH", parsed_url.path)
+
+        print(f"Fuzzing URL parameter '{param_name}' with payload: {payload}")
+
+        return f"{param_name}={payload}"
+
+    def _test_type_juggling(self, param_name: str, original_value: str) -> str:
+        """Test type juggling by changing the parameter to an array"""
+        return f"{param_name}[]={original_value}"
+
+    def _test_duplication_after(self, param_name: str, original_value: str) -> str:
+        """Test if duplicating a parameter causes issues."""
+        fuzzed_param = self.fuzz_parameter(param_name, original_value)[0]
+        return f"{param_name}={original_value}&{fuzzed_param}"
+    
+    def _test_duplication_before(self, param_name: str, original_value: str) -> str:
+        """Test if duplicating a parameter causes issues."""
+        fuzzed_param = self.fuzz_parameter(param_name, original_value)[0]
+        return f"{fuzzed_param}&{param_name}={original_value}"
 
 class FuzzingSSPOIDCSUL(SSPOIDCSUL):
-    def __init__(self, op_url, rp_url, proxy=None, user="student", password="studentpass"):
+    def __init__(self, op_url, rp_url, proxy=None, user="student", password="studentpass", fuzz_params=None, fuzz_strategies=None):
         super().__init__(op_url, rp_url, proxy, user=user, password=password)
-        self.fuzzer = Fuzzer(self)
+        self.fuzz_params = fuzz_params if fuzz_params else OIDC_PARAMETER_PROPERTIES.keys()
+        print(f"Fuzzing parameters: {self.fuzz_params} with strategies: {fuzz_strategies}")
+
+        self.fuzzer = Fuzzer(self, fuzz_strategies=fuzz_strategies)
         self.changed_inputs = [] # Tracks which inputs were fuzzed and how
 
         # Define which parameters are used in each input letter
         self.letter_params = {
             "client_callback_invalid": ["code", "state"],
-            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "state", "scope"]
+            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope"]
         }
 
     def pre(self):
@@ -506,15 +561,17 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         super().post()
     
     def _build_fuzzed_url(self, base_url: str, params: Dict[str, str], fuzz_param: Optional[str] = None) -> str:
+        query_string = '&'.join([f"{k}={v}" for k, v in params.items() if k != fuzz_param])
+        
+        fuzzed_value = None
         if fuzz_param and fuzz_param in params:
             fuzzed_value, strategy = self.fuzzer.fuzz_parameter(fuzz_param, params[fuzz_param])
-            if fuzzed_value is not None:
-                params[fuzz_param] = fuzzed_value
-            else:
-                del params[fuzz_param]  # Omit parameter
-        
-        query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-        return f"{base_url}?{query_string}", strategy
+            if fuzzed_value:  # Only add if the strategy returns a non-empty value
+                if query_string:
+                    query_string += '&'
+                query_string += fuzzed_value
+
+        return f"{base_url}?{query_string}", strategy, fuzzed_value
 
     def step(self, letter):
         """Execute a step and record the concrete fuzzed value."""
@@ -524,25 +581,30 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         for param in self.letter_params.get(letter, []):
             params[param] = self.parsed_params.get(param, 'invalid'+param)
         
+        fuzz_params = {k: v for k, v in params.items() if k in self.fuzz_params} # Only consider parameters that are in the fuzzing list
+        
         weighted_choices = []
-        for key in params:
+        for key in fuzz_params:
             props = OIDC_PARAMETER_PROPERTIES.get(key)
             weighted_choices.extend([key] * len(props))  # Weight by number of properties
         if weighted_choices:
             fuzz_param = random.choice(weighted_choices)
+        else:
+            self.changed_inputs.append({})  # No fuzzing for this step
+            return super().step(letter)
 
         match letter:
             case "client_callback_invalid":
-                url, strategy = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
-                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': params.get(fuzz_param, None)}
+                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
+                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
                 self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url)
+                return self._make_request('GET', url, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
     
             case "authserver_authorize_invalid":
-                url, strategy = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param=fuzz_param)
-                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': params.get(fuzz_param, None)}
+                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param=fuzz_param)
+                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
                 self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url, parse_redirect_params=True)
+                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
             
             case _:
                 # For non-fuzzed inputs, use parent implementation
@@ -635,6 +697,9 @@ def setup_argparse():
     parser.add_argument('-e', '--expected-states', type=int, default=10, help='Expected number of states (for progress bar estimation)')
     parser.add_argument('--no-progress', action='store_true', help='Disable progress bar')
 
+    parser.add_argument('--fuzz-params', nargs='+', help='List of parameters to fuzz')
+    parser.add_argument('--fuzz-strategies', nargs='+', help='List of strategies to use for fuzzing, space-separated (e.g. constant omit reuse other_user other_session url type_juggling duplication_after duplication_before)')
+
     return parser
 
 
@@ -665,5 +730,5 @@ if __name__ == "__main__":
             fuzzing_sul = FuzzingSUL(args.op_url, args.rp_url, proxy=args.proxy)
             fuzz_model(fuzzing_sul, learned_model)
         elif args.target == 'sspoidc':
-            fuzzing_sul = FuzzingSSPOIDCSUL(args.op_url, args.rp_url, proxy=args.proxy)    
+            fuzzing_sul = FuzzingSSPOIDCSUL(args.op_url, args.rp_url, proxy=args.proxy, fuzz_params=args.fuzz_params, fuzz_strategies=args.fuzz_strategies)    
             fuzz_model(fuzzing_sul, learned_model)
