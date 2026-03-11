@@ -17,6 +17,13 @@
         - used for once or multiple times: Substitute the value with an used one and compare the response
         - user-specific: Substitute the value with a fresh one of another user
         - session-specific: Open a new browser and get a fresh value of this parameter to substitute the existing one
+    - [ ] Fuzz request object
+        - [x] Run normal strategies on parameters, put them in request object (e.g. duplicating parameters)
+        - [x] Parse duplicated parameters and type juggling into request object, e.g. state=x&state=y -> {"state":"x", "state": "y"}
+        - ~[ ] Send malformed JSON~ not interesting, we don't focus on the JSON parser for now
+        - [x] send both query parameters and request object, request object should have preference
+        - [x] send request object within request object
+    - [ ] authorization request during fuzzing just excludes state parameter now, why? include it again
 
 
 SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant.org/simplesaml-op/module.php/oidc/.well-known/openid-configuration

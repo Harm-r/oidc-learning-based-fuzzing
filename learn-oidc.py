@@ -1,11 +1,13 @@
 import requests
 import time
 from requests.adapters import HTTPAdapter
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote_plus
 import re
 import argparse
 import datetime
 import random
+import json
+import base64
 from enum import Enum, auto
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Callable, Set, Tuple
@@ -58,6 +60,27 @@ def pretty_print_response(r: requests.Response):
     out += r.text
     out += "\n"
     return out
+
+def encode_jwt(payload, header=None) -> str:
+    """Encode a JWT with the given payload using 'none' algorithm."""
+    if isinstance(payload, dict):
+        payload_str = json.dumps(payload, separators=(',', ':'))  # Compact encoding
+    else:
+        payload_str = payload
+    if header is None:
+        header = {"alg": "none"}
+    header = json.dumps(header, separators=(',', ':'))
+    return f"{base64.urlsafe_b64encode(header.encode()).rstrip(b'=').decode()}.{base64.urlsafe_b64encode(payload_str.encode()).rstrip(b'=').decode()}."
+
+def decode_jwt(token) -> Dict:
+    """Decode a JWT without verifying the signature."""
+    try:
+        header_b64, payload_b64, signature = token.split('.')
+        payload_json = base64.urlsafe_b64decode(payload_b64 + '==').decode()
+        return payload_json
+    except Exception as e:
+        print(f"Error decoding JWT: {e}")
+        return {}
 
 class BaseSUL(SUL):
     def __init__(self, op_url, rp_url, proxy=None, user="user", password="password"):
@@ -292,6 +315,8 @@ class SSPOIDCSUL(BaseSUL):
             "client_callback_error", 
             "authserver_authorize",
             "authserver_authorize_invalid",
+            "authserver_authorize_request",
+            "authserver_authorize_request_invalid",
             "authserver_login",
             "authserver_login_invalid"
         ]
@@ -311,6 +336,8 @@ class SSPOIDCSUL(BaseSUL):
             location = re.sub(r'code=[A-Za-z0-9_\-\%]+', 'code=<CODE>', location)
             # Abstract AuthState parameter
             location = re.sub(r'AuthState=[A-Za-z0-9_\-\%]+', 'AuthState=<AUTHSTATE>', location)
+            # Abstract request object
+            location = re.sub(r'request=[A-Za-z0-9_\-\%\.]+', 'request=<REQUEST>', location)
 
             return f"({r.status_code}, 'Location: {location}')"
         
@@ -374,6 +401,23 @@ class SSPOIDCSUL(BaseSUL):
                 url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&redirect_uri=invalidredirecturi&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
+            case "authserver_authorize_request":
+                params = {
+                    'client_id': self.parsed_params.get('client_id'),
+                    'redirect_uri': self.parsed_params.get('redirect_uri'),
+                    'response_type': self.parsed_params.get('response_type'),
+                    'state': self.parsed_params.get('state'),
+                    'scope': self.parsed_params.get('scope'),
+                }
+                params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+                request_object = encode_jwt(params)
+                url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&scope=openid&request={request_object}"
+                return self._make_request('GET', url, parse_redirect_params=True)
+            
+            case "authserver_authorize_request_invalid":
+                url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&scope=openid&request=invalidrequest"
+                return self._make_request('GET', url, parse_redirect_params=True)
+            
             case "authserver_login":
                 url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
                 self.used_params['AuthState'] = self.parsed_params.get('AuthState')
@@ -392,6 +436,7 @@ class Prop(Enum):
     USER_SPECIFIC = auto()
     SESSION_SPECIFIC = auto()
     URL = auto()
+    REQUEST_OBJECT = auto()
 
 
 # Parameter property mappings based on OAuth 2.0 / OIDC spec
@@ -402,6 +447,7 @@ OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
     "redirect_uri": {Prop.CONSTANT, Prop.URL},
     "response_type": {Prop.CONSTANT, Prop.MANDATORY},
     "scope": {Prop.CONSTANT, Prop.MANDATORY},
+    "request": {Prop.REQUEST_OBJECT}
 }
 
 
@@ -419,12 +465,14 @@ class Fuzzer:
             "other_user": self._test_other_user_value,
             "other_session": self._test_other_session_value,
             "url": self._test_url,
+            "request_object": self._test_request_object,
+            "request_object_with_normal_params": self._test_request_object_with_normal_params,
+            "request_object_within_request_object": self._test_request_object_within_request_object,
             "type_juggling": self._test_type_juggling,
             "duplication_after": self._test_duplication_after,
             "duplication_before": self._test_duplication_before
         }
         self.fuzz_strategies = [self.strategies[s] for s in fuzz_strategies] if fuzz_strategies else list(self.strategies.values())
-
 
         self.default_strategies = [
             self._test_type_juggling,
@@ -432,7 +480,7 @@ class Fuzzer:
             # self._test_duplication_before # Only last value is used by SSP OIDC module
         ]
     
-    def fuzz_parameter(self, param_name: str, original_value: Optional[str]) -> Tuple[str, str]:
+    def fuzz_parameter(self, param_name: str, original_value: Optional[str], filter_strategies="default") -> Tuple[str, str]:
         properties = OIDC_PARAMETER_PROPERTIES.get(param_name)
 
         if not properties:
@@ -452,8 +500,16 @@ class Fuzzer:
             fuzz_strategies.append(self._test_other_session_value)
         if Prop.URL in properties:
             fuzz_strategies.append(self._test_url)
-
-        fuzz_strategies = list(set(fuzz_strategies).intersection(self.fuzz_strategies))
+        if Prop.REQUEST_OBJECT in properties:
+            fuzz_strategies.append(self._test_request_object)
+            fuzz_strategies.append(self._test_request_object_with_normal_params)
+            fuzz_strategies.append(self._test_request_object_within_request_object)
+        
+        if filter_strategies == "default":
+            # Use the default strategies defined in the constructor
+            fuzz_strategies = list(set(fuzz_strategies).intersection(self.fuzz_strategies))
+        elif filter_strategies != "all":
+            fuzz_strategies = list(set(fuzz_strategies).intersection(filter_strategies))
 
         strategy = random.choice(fuzz_strategies)
 
@@ -520,9 +576,61 @@ class Fuzzer:
         payload = payload.replace("ATTACKER", "evil.com")
         payload = payload.replace("/PATH", parsed_url.path)
 
-        print(f"Fuzzing URL parameter '{param_name}' with payload: {payload}")
-
         return f"{param_name}={payload}"
+    
+    def _test_request_object(self, param_name: str, original_value: str) -> str:
+        """Test fuzzing a request object parameter."""
+        params = {
+            'client_id': self.sul.parsed_params.get('client_id', 'invalid'),
+            'redirect_uri': self.sul.parsed_params.get('redirect_uri', 'invalid'),
+            'response_type': self.sul.parsed_params.get('response_type', 'invalid'),
+            # 'state': self.sul.parsed_params.get('state'), # State is just reflected, not used by the authorization endpoint, so fuzzing it doesn't make a difference
+            'scope': self.sul.parsed_params.get('scope', 'invalid'),
+        }
+        to_fuzz = random.choice(list(params.keys()))
+        fuzzed_param, strategy = self.fuzz_parameter(to_fuzz, params[to_fuzz], filter_strategies="all")
+        if strategy == "_test_type_juggling":
+            value = fuzzed_param.split('=')[1]
+            params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+            params[to_fuzz] = [value]
+        elif strategy in ["_test_duplication_after", "_test_duplication_before"]:
+        # remove params[to_fuzz]
+            param1, param2 = fuzzed_param.split('&')
+            val1 = unquote_plus(param1.split('=')[1])
+            val2 = unquote_plus(param2.split('=')[1])
+            params.pop(to_fuzz)
+            params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+            params = str(params)
+            params = params.replace("'", '"')  # JWT libraries expect double quotes
+            params = params[:-1] + f', "{to_fuzz}": {val1}, "{to_fuzz}": {val2}' + params[-1]
+        else:
+            params[to_fuzz] = fuzzed_param
+            params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+        request_object = encode_jwt(params)
+        return f"{param_name}={request_object}"
+
+    def _test_request_object_with_normal_params(self, param_name: str, original_value: str) -> str:
+        request_obj_param = self._test_request_object(param_name, original_value)
+        normal_params = f"client_id={self.sul.parsed_params.get('client_id', 'invalid')}&redirect_uri={self.sul.parsed_params.get('redirect_uri', 'invalid')}&response_type={self.sul.parsed_params.get('response_type', 'invalid')}&scope={self.sul.parsed_params.get('scope', 'invalid')}&state={self.sul.parsed_params.get('state', 'invalid')}"
+        return f"{request_obj_param}&{normal_params}"
+
+    def _test_request_object_within_request_object(self, param_name: str, original_value: str) -> str:
+        valid_params = {
+            'client_id': self.sul.parsed_params.get('client_id', 'invalid'),
+            'redirect_uri': self.sul.parsed_params.get('redirect_uri', 'invalid'),
+            'response_type': self.sul.parsed_params.get('response_type', 'invalid'),
+            # 'state': self.sul.parsed_params.get('state'), # State is just reflected, not used by the authorization endpoint, so fuzzing it doesn't make a difference
+            'scope': self.sul.parsed_params.get('scope', 'invalid'),
+        }
+        valid_params = {k: unquote_plus(v) for k, v in valid_params.items() if v is not None}
+        valid_request_object = encode_jwt(valid_params)
+
+        fuzzed_request_object = self._test_request_object(param_name, original_value).split('=')[1]
+        decoded_fuzzed = decode_jwt(fuzzed_request_object)
+        decoded_fuzzed = decoded_fuzzed[:-1] + f', "request": "{valid_request_object}"' + decoded_fuzzed[-1]
+        nested_request_object = encode_jwt(decoded_fuzzed)
+
+        return f"{param_name}={nested_request_object}"
 
     def _test_type_juggling(self, param_name: str, original_value: str) -> str:
         """Test type juggling by changing the parameter to an array"""
@@ -530,12 +638,21 @@ class Fuzzer:
 
     def _test_duplication_after(self, param_name: str, original_value: str) -> str:
         """Test if duplicating a parameter causes issues."""
-        fuzzed_param = self.fuzz_parameter(param_name, original_value)[0]
+        filter_strategies = self.strategies.copy()
+        filter_strategies.pop("duplication_after")
+        filter_strategies.pop("duplication_before")
+        filter_strategies.pop("omit")
+        fuzzed_param, strategy = self.fuzz_parameter(param_name, original_value, filter_strategies=filter_strategies.values())
         return f"{param_name}={original_value}&{fuzzed_param}"
     
     def _test_duplication_before(self, param_name: str, original_value: str) -> str:
         """Test if duplicating a parameter causes issues."""
-        fuzzed_param = self.fuzz_parameter(param_name, original_value)[0]
+        filter_strategies = self.strategies.copy()
+        filter_strategies.pop("duplication_after")
+        filter_strategies.pop("duplication_before")
+        filter_strategies.pop("omit")
+        fuzzed_param, strategy = self.fuzz_parameter(param_name, original_value, filter_strategies=filter_strategies.values())
+        print("_test_duplication_before generated:", fuzzed_param, "with strategy:", strategy)
         return f"{fuzzed_param}&{param_name}={original_value}"
 
 class FuzzingSSPOIDCSUL(SSPOIDCSUL):
@@ -550,7 +667,8 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         # Define which parameters are used in each input letter
         self.letter_params = {
             "client_callback_invalid": ["code", "state"],
-            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope"]
+            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope"],
+            "authserver_authorize_request_invalid": ["client_id", "scope", "request"]
         }
 
     def pre(self):
@@ -605,6 +723,12 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
                 changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
+            
+            case "authserver_authorize_request_invalid":
+                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param="request")
+                changed_value = {f'fuzzed_request_{strategy}': fuzzed_value}
+                self.changed_inputs.append(changed_value)
+                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'request ({strategy}) -> {fuzzed_value}'})
             
             case _:
                 # For non-fuzzed inputs, use parent implementation
