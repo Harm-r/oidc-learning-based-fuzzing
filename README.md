@@ -8,7 +8,7 @@
     - [x] URL fuzzer (redirect_uri, request_uri)
         - [x] Basic version: just a list of standard mutations
         - [x] Maybe use https://portswigger.net/web-security/ssrf/url-validation-bypass-cheat-sheet instead of redirect-fuzzer?
-    - [ ] Basic parameter fuzzer:
+    - [x] Basic parameter fuzzer:
         - [x] Parameter pollution: duplicate, two different parameters, maybe with arrays? redirect_uri[0]=x,redirect_uri[1]=y?
     - [ ] JWT fuzzer (use jwt tool as inspiration)
     - [x] OAuthTester like approach: define properties of parameters and fuzz based on these properties:
@@ -17,13 +17,17 @@
         - used for once or multiple times: Substitute the value with an used one and compare the response
         - user-specific: Substitute the value with a fresh one of another user
         - session-specific: Open a new browser and get a fresh value of this parameter to substitute the existing one
-    - [ ] Fuzz request object
+    - [x] Fuzz request object
         - [x] Run normal strategies on parameters, put them in request object (e.g. duplicating parameters)
         - [x] Parse duplicated parameters and type juggling into request object, e.g. state=x&state=y -> {"state":"x", "state": "y"}
         - ~[ ] Send malformed JSON~ not interesting, we don't focus on the JSON parser for now
         - [x] send both query parameters and request object, request object should have preference
         - [x] send request object within request object
     - [ ] authorization request during fuzzing just excludes state parameter now, why? include it again
+- [ ] Fuzz Implicit Flow with mod_auth_openidc
+    - [ ] Install mod_auth_openidc
+    - [ ] Learn implicit flow
+    - [ ] Fuzz implicit flow
 
 
 SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant.org/simplesaml-op/module.php/oidc/.well-known/openid-configuration

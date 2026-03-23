@@ -26,7 +26,7 @@ def make_request_with_retry(session, method, url, max_retries=5, **kwargs):
     """Make a request with retry logic for proxy/connection errors."""
     for attempt in range(max_retries):
         try:
-            time.sleep(0.1)  # Base delay between all requests
+            # time.sleep(0.1)  # Base delay between all requests
             if method == 'GET':
                 return session.get(url, allow_redirects=False, timeout=10, stream=True, **kwargs)
             elif method == 'POST':
@@ -104,6 +104,9 @@ class BaseSUL(SUL):
         self.parsed_params = {
             'response_type': 'code', # Default response type
         }
+        self.parsed_params_implicit = {
+            'response_type': 'token id_token', # Default response type
+        }
         self.concrete_inputs = []  # HTTP requests
         self.abstract_outputs = []
         self.concrete_outputs = [] # HTTP responses
@@ -111,26 +114,36 @@ class BaseSUL(SUL):
     def post(self):
         self.s.close()
     
-    def _parse_redirect_params(self, r: requests.Response):
+    def _parse_redirect_params(self, r: requests.Response, use_implicit=False):
         location = r.headers.get('Location')
         if not location:
             return
         
         parsed_url = urlparse(location)
+        # Grab fragment if present, otherwise use query parameters
+        params = ""
+        if parsed_url.fragment:
+            params = parsed_url.fragment
+        else:
+            params = parsed_url.query
+
         # Manually parse without URL decoding
-        if parsed_url.query:
-            for param in parsed_url.query.split('&'):
+        if params:
+            for param in params.split('&'):
                 if '=' in param:
                     key, value = param.split('=', 1)
-                    self.parsed_params[key] = value
+                    if use_implicit:
+                        self.parsed_params_implicit[key] = value
+                    else:
+                        self.parsed_params[key] = value
     
     def _abstract_output(self, r: requests.Response):
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def _make_request(self, method, url, parse_redirect_params=False, headers=None, **kwargs):
+    def _make_request(self, method, url, parse_redirect_params=False, parse_implicit=False, headers=None, **kwargs):
         r = make_request_with_retry(self.s, method, url, proxies=self.proxies, verify=False, headers=headers, **kwargs)
         if parse_redirect_params:
-            self._parse_redirect_params(r)
+            self._parse_redirect_params(r, use_implicit=parse_implicit)
         self.concrete_inputs.append(pretty_print_request(r.request))
         self.concrete_outputs.append(pretty_print_response(r))
         abstract_out = self._abstract_output(r)
@@ -309,14 +322,18 @@ class FuzzingSUL(OAuthSUL):
 class SSPOIDCSUL(BaseSUL):
     def __init__(self, op_url, rp_url, proxy=None, user="student", password="studentpass"):
         super().__init__(op_url, rp_url, proxy, user, password)
-        self.input_al = ["client_sso_login", 
+        self.input_al = ["client_sso_login",
+            "client_sso_login_implicit",
             "client_callback", 
             "client_callback_invalid", 
-            "client_callback_error", 
+            # "client_callback_error",
+            "client_callback_implicit",
+            "client_callback_implicit_invalid",
             "authserver_authorize",
             "authserver_authorize_invalid",
-            "authserver_authorize_request",
-            "authserver_authorize_request_invalid",
+            "authserver_authorize_implicit",
+            # "authserver_authorize_request",
+            # "authserver_authorize_request_invalid",
             "authserver_login",
             "authserver_login_invalid"
         ]
@@ -338,6 +355,17 @@ class SSPOIDCSUL(BaseSUL):
             location = re.sub(r'AuthState=[A-Za-z0-9_\-\%]+', 'AuthState=<AUTHSTATE>', location)
             # Abstract request object
             location = re.sub(r'request=[A-Za-z0-9_\-\%\.]+', 'request=<REQUEST>', location)
+            # Abstract nonce
+            location = re.sub(r'nonce=[A-Za-z0-9_\-\%]+', 'nonce=<NONCE>', location)
+            # Abstract access token
+            location = re.sub(r'access_token=[A-Za-z0-9_\-\%\.]+', 'access_token=<ACCESS_TOKEN>', location)
+            # Abstract id token
+            location = re.sub(r'id_token=[A-Za-z0-9_\-\%\.]+', 'id_token=<ID_TOKEN>', location)
+            # Expires in is sometimes a second less, so we abstract it as well
+            location = re.sub(r'expires_in=[0-9]+', 'expires_in=<EXPIRES_IN>', location)
+
+            # Authorization endpoint should be abstracted, as it may use normal parameters or the request object
+            location = re.sub(r'/authorization\?[^ ]+', '/authorization?<PARAMS>', location)
 
             return f"({r.status_code}, 'Location: {location}')"
         
@@ -374,6 +402,10 @@ class SSPOIDCSUL(BaseSUL):
                 url = f"{self.rp_url}/../test-oidc.php"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
+            case "client_sso_login_implicit":
+                url = f"{self.rp_url}/../mod_auth_openidc/test-implicit.php"
+                return self._make_request('GET', url, parse_redirect_params=True, parse_implicit=True)
+            
             case "client_callback":
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?code={self.parsed_params.get('code')}&state={self.parsed_params.get('state')}"
                 out = self._make_request('GET', url)
@@ -387,45 +419,106 @@ class SSPOIDCSUL(BaseSUL):
                 url = f"{self.rp_url}/module.php/authoauth2/linkback?code=invalidcode&state=invalidstate"
                 return self._make_request('GET', url)
             
-            case "client_callback_error":
-                url = f"{self.rp_url}/module.php/authoauth2/linkback?error=error&state={self.parsed_params.get('state')}"
-                # TODO: should the state be invalidated here? SSP OIDC seems to accept it
-                # self.used_params['state'] = self.parsed_params.get('state')
-                return self._make_request('GET', url)
+            # case "client_callback_error":
+            #     url = f"{self.rp_url}/module.php/authoauth2/linkback?error=error&state={self.parsed_params.get('state')}"
+            #     # TODO: should the state be invalidated here? SSP OIDC seems to accept it
+            #     # self.used_params['state'] = self.parsed_params.get('state')
+            #     return self._make_request('GET', url)
+            
+            case "client_callback_implicit":
+                url = f"{self.rp_url}/../mod_auth_openidc/redirect_uri"
+                data = {
+                    'response_mode': 'fragment',
+                    'state': self.parsed_params_implicit.get('state'),
+                    'access_token': self.parsed_params_implicit.get('access_token'),
+                    'token_type': self.parsed_params_implicit.get('token_type'),
+                    'expires_in': self.parsed_params_implicit.get('expires_in'),
+                    'id_token': self.parsed_params_implicit.get('id_token'),
+                }
+                return self._make_request('POST', url, data=data)
+            
+            case "client_callback_implicit_invalid":
+                url = f"{self.rp_url}/../mod_auth_openidc/redirect_uri"
+                data = {
+                    'response_mode': 'fragment',
+                    'state': 'invalidstate',
+                    'access_token': 'invalidtoken',
+                    'token_type': 'invalidtype',
+                    'expires_in': 'invalid',
+                    'id_token': 'invalidtoken',
+                }
+                return self._make_request('POST', url, data=data)
             
             case "authserver_authorize":
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&redirect_uri={self.parsed_params.get('redirect_uri')}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}&scope={self.parsed_params.get('scope')}&approval_prompt={self.parsed_params.get('approval_prompt')}"
+                use_request_object = random.choice([True, False])
+                if use_request_object:
+                    params = {
+                        'client_id': self.parsed_params.get('client_id'),
+                        'redirect_uri': self.parsed_params.get('redirect_uri'),
+                        'response_type': self.parsed_params.get('response_type'),
+                        'state': self.parsed_params.get('state'),
+                        'scope': self.parsed_params.get('scope'),
+                    }
+                    params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+                    request_object = encode_jwt(params)
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&scope=openid&request={request_object}"
+                else:
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&redirect_uri={self.parsed_params.get('redirect_uri')}&response_type={self.parsed_params.get('response_type')}&state={self.parsed_params.get('state')}&scope={self.parsed_params.get('scope')}"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
+            case "authserver_authorize_implicit":
+                use_request_object = random.choice([True, False])
+                if use_request_object:
+                    params = {
+                        'client_id': self.parsed_params_implicit.get('client_id'),
+                        'redirect_uri': self.parsed_params_implicit.get('redirect_uri'),
+                        'response_type': self.parsed_params_implicit.get('response_type'),
+                        'state': self.parsed_params_implicit.get('state'),
+                        'scope': self.parsed_params_implicit.get('scope'),
+                        'nonce': self.parsed_params_implicit.get('nonce'),
+                    }
+                    params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+                    request_object = encode_jwt(params)
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&scope=openid&request={request_object}"
+                else:
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&redirect_uri={self.parsed_params_implicit.get('redirect_uri')}&response_type={self.parsed_params_implicit.get('response_type')}&state={self.parsed_params_implicit.get('state')}&scope={self.parsed_params_implicit.get('scope')}&nonce={self.parsed_params_implicit.get('nonce')}"
+                return self._make_request('GET', url, parse_redirect_params=True, parse_implicit=True)
+
             case "authserver_authorize_invalid":
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&redirect_uri=invalidredirecturi&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
+                use_request_object = random.choice([True, False])
+                if use_request_object:
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&scope=openid&request=invalidrequest"
+                else:
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&redirect_uri=invalidredirecturi&response_type=invalidresponsetype&state=invalidstate&scope=invalidscope&approval_prompt=invalidprompt"
                 return self._make_request('GET', url, parse_redirect_params=True)
             
-            case "authserver_authorize_request":
-                params = {
-                    'client_id': self.parsed_params.get('client_id'),
-                    'redirect_uri': self.parsed_params.get('redirect_uri'),
-                    'response_type': self.parsed_params.get('response_type'),
-                    'state': self.parsed_params.get('state'),
-                    'scope': self.parsed_params.get('scope'),
-                }
-                params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
-                request_object = encode_jwt(params)
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&scope=openid&request={request_object}"
-                return self._make_request('GET', url, parse_redirect_params=True)
+            # case "authserver_authorize_request":
+            #     params = {
+            #         'client_id': self.parsed_params.get('client_id'),
+            #         'redirect_uri': self.parsed_params.get('redirect_uri'),
+            #         'response_type': self.parsed_params.get('response_type'),
+            #         'state': self.parsed_params.get('state'),
+            #         'scope': self.parsed_params.get('scope'),
+            #     }
+            #     params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+            #     request_object = encode_jwt(params)
+            #     url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params.get('client_id')}&scope=openid&request={request_object}"
+            #     return self._make_request('GET', url, parse_redirect_params=True)
             
-            case "authserver_authorize_request_invalid":
-                url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&scope=openid&request=invalidrequest"
-                return self._make_request('GET', url, parse_redirect_params=True)
+            # case "authserver_authorize_request_invalid":
+            #     url = f"{self.op_url}/module.php/oidc/authorization?client_id=invalidclient&scope=openid&request=invalidrequest"
+            #     return self._make_request('GET', url, parse_redirect_params=True)
             
             case "authserver_login":
-                url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
-                self.used_params['AuthState'] = self.parsed_params.get('AuthState')
+                auth_state = self.parsed_params.get('AuthState') or self.parsed_params_implicit.get('AuthState')
+                url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={auth_state}"
+                self.used_params['AuthState'] = auth_state
                 return self._make_request('POST', url, parse_redirect_params=True, data={'username': self.user, 'password': self.password})
             
             case "authserver_login_invalid":
-                url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={self.parsed_params.get('AuthState')}"
-                self.used_params['AuthState'] = self.parsed_params.get('AuthState')
+                auth_state = self.parsed_params.get('AuthState') or self.parsed_params_implicit.get('AuthState')
+                url = f"{self.op_url}/module.php/core/loginuserpass?AuthState={auth_state}"
+                self.used_params['AuthState'] = auth_state
                 return self._make_request('POST', url, parse_redirect_params=True, data={'username': self.user, 'password': 'wrongpassword'})
 
 
@@ -437,6 +530,7 @@ class Prop(Enum):
     SESSION_SPECIFIC = auto()
     URL = auto()
     REQUEST_OBJECT = auto()
+    TOKEN = auto()
 
 
 # Parameter property mappings based on OAuth 2.0 / OIDC spec
@@ -447,7 +541,13 @@ OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
     "redirect_uri": {Prop.CONSTANT, Prop.URL},
     "response_type": {Prop.CONSTANT, Prop.MANDATORY},
     "scope": {Prop.CONSTANT, Prop.MANDATORY},
-    "request": {Prop.REQUEST_OBJECT}
+    "request": {Prop.REQUEST_OBJECT},
+    "nonce": {Prop.ONCE, Prop.MANDATORY, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC},
+    "response_mode": {Prop.CONSTANT, Prop.MANDATORY},
+    "token_type": {Prop.CONSTANT, Prop.MANDATORY},
+    "expires_in": {Prop.CONSTANT, Prop.MANDATORY},
+    "access_token": {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC, Prop.TOKEN},
+    "id_token":  {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC, Prop.TOKEN}
 }
 
 
@@ -533,12 +633,22 @@ class Fuzzer:
         """Test using a value from a different user."""
         tmp_sul = type(self.sul)(self.sul.op_url, self.sul.rp_url, self.sul.proxy, user="employee", password="employeepass")
         tmp_sul.pre()
-        tmp_sul.step("client_sso_login")
-        tmp_sul.step("authserver_authorize")
-        tmp_sul.step("authserver_login")
-        tmp_sul.step("authserver_authorize")
-        other_value = tmp_sul.parsed_params.get(param_name)
+
+        if param_name in ["nonce", "access_token", "id_token"]:
+            tmp_sul.step("client_sso_login")
+            tmp_sul.step("authserver_authorize_implicit")
+            tmp_sul.step("authserver_login")
+            tmp_sul.step("authserver_authorize_implicit")
+            other_value = tmp_sul.parsed_params_implicit.get(param_name)
+        else:
+            tmp_sul.step("client_sso_login")
+            tmp_sul.step("authserver_authorize")
+            tmp_sul.step("authserver_login")
+            tmp_sul.step("authserver_authorize")
+            other_value = tmp_sul.parsed_params.get(param_name)
+        
         tmp_sul.post()
+        
         if other_value:
             return f"{param_name}={other_value}"
         else:
@@ -548,12 +658,22 @@ class Fuzzer:
         """Test using a value from a different session."""
         tmp_sul = type(self.sul)(self.sul.op_url, self.sul.rp_url, self.sul.proxy, user=self.sul.user, password=self.sul.password)
         tmp_sul.pre()
-        tmp_sul.step("client_sso_login")
-        tmp_sul.step("authserver_authorize")
-        tmp_sul.step("authserver_login")
-        tmp_sul.step("authserver_authorize")
-        other_value = tmp_sul.parsed_params.get(param_name)
+
+        if param_name in ["nonce", "access_token", "id_token"]:
+            tmp_sul.step("client_sso_login_implicit")
+            tmp_sul.step("authserver_authorize_implicit")
+            tmp_sul.step("authserver_login")
+            tmp_sul.step("authserver_authorize_implicit")
+            other_value = tmp_sul.parsed_params_implicit.get(param_name)
+        else:
+            tmp_sul.step("client_sso_login")
+            tmp_sul.step("authserver_authorize")
+            tmp_sul.step("authserver_login")
+            tmp_sul.step("authserver_authorize")
+            other_value = tmp_sul.parsed_params.get(param_name)
+        
         tmp_sul.post()
+
         if other_value:
             return f"{param_name}={other_value}"
         else:
@@ -632,6 +752,9 @@ class Fuzzer:
 
         return f"{param_name}={nested_request_object}"
 
+    def _test_token(self, param_name: str, original_value: str) -> str:
+        pass
+
     def _test_type_juggling(self, param_name: str, original_value: str) -> str:
         """Test type juggling by changing the parameter to an array"""
         return f"{param_name}[]={original_value}"
@@ -659,7 +782,6 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     def __init__(self, op_url, rp_url, proxy=None, user="student", password="studentpass", fuzz_params=None, fuzz_strategies=None):
         super().__init__(op_url, rp_url, proxy, user=user, password=password)
         self.fuzz_params = fuzz_params if fuzz_params else OIDC_PARAMETER_PROPERTIES.keys()
-        print(f"Fuzzing parameters: {self.fuzz_params} with strategies: {fuzz_strategies}")
 
         self.fuzzer = Fuzzer(self, fuzz_strategies=fuzz_strategies)
         self.changed_inputs = [] # Tracks which inputs were fuzzed and how
@@ -667,8 +789,8 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         # Define which parameters are used in each input letter
         self.letter_params = {
             "client_callback_invalid": ["code", "state"],
-            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope"],
-            "authserver_authorize_request_invalid": ["client_id", "scope", "request"]
+            "client_callback_implicit_invalid": ["response_mode", "state", "access_token", "token_type", "expires_in", "id_token"],
+            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope", "nonce", "request"],
         }
 
     def pre(self):
@@ -678,18 +800,21 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     def post(self):
         super().post()
     
-    def _build_fuzzed_url(self, base_url: str, params: Dict[str, str], fuzz_param: Optional[str] = None) -> str:
-        query_string = '&'.join([f"{k}={v}" for k, v in params.items() if k != fuzz_param])
+    def _build_fuzzed_data(self, base_data: Dict[str, str], fuzz_param: Optional[str] = None, url: Optional[str] = None):
+        query_string = '&'.join([f"{k}={v}" for k, v in base_data.items() if k != fuzz_param])
         
         fuzzed_value = None
-        if fuzz_param and fuzz_param in params:
-            fuzzed_value, strategy = self.fuzzer.fuzz_parameter(fuzz_param, params[fuzz_param])
+        print(f"Building fuzzed data for parameter: {fuzz_param} with base data: {base_data}")
+        if fuzz_param and fuzz_param in base_data:
+            fuzzed_value, strategy = self.fuzzer.fuzz_parameter(fuzz_param, base_data[fuzz_param])
             if fuzzed_value:  # Only add if the strategy returns a non-empty value
                 if query_string:
                     query_string += '&'
                 query_string += fuzzed_value
-
-        return f"{base_url}?{query_string}", strategy, fuzzed_value
+        
+        if url:
+            return f"{url}?{query_string}", strategy, fuzzed_value
+        return query_string, strategy, fuzzed_value
 
     def step(self, letter):
         """Execute a step and record the concrete fuzzed value."""
@@ -713,23 +838,64 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
 
         match letter:
             case "client_callback_invalid":
-                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.rp_url}/module.php/authoauth2/linkback", params, fuzz_param=fuzz_param)
+                url, strategy, fuzzed_value = self._build_fuzzed_data(params, fuzz_param=fuzz_param, url=f"{self.rp_url}/module.php/authoauth2/linkback")
                 changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
+
+            case "client_callback_implicit_invalid":
+                url = f"{self.rp_url}/../mod_auth_openidc/redirect_uri"
+                params_with_response_mode = params.copy()
+                params_with_response_mode['response_mode'] = 'fragment'
+                fuzzed_data, strategy, fuzzed_value = self._build_fuzzed_data(params_with_response_mode, fuzz_param=fuzz_param)
+                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
+                self.changed_inputs.append(changed_value)
+                return self._make_request('POST', url, data=fuzzed_data, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
     
             case "authserver_authorize_invalid":
-                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param=fuzz_param)
+                use_request_object = random.choice([True, False])
+                use_implicit = random.choice([True, False])
+
+                match (use_request_object, use_implicit):
+                    case (False, False):
+                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "redirect_uri", "response_type", "state", "scope"]}
+                        params_to_use["response_type"] = "code"
+                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param=fuzz_param, url=f"{self.op_url}/module.php/oidc/authorization")
+                    case (False, True):
+                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "redirect_uri", "response_type", "state", "scope", "nonce"]}
+                        params_to_use["response_type"] = "id_token token"
+                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param=fuzz_param, url=f"{self.op_url}/module.php/oidc/authorization")
+                    case (True, False):
+                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "scope", "request"]}
+                        params_to_use["response_type"] = "code"
+                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param="request", url=f"{self.op_url}/module.php/oidc/authorization")
+                    case (True, True):
+                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "scope", "request"]}
+                        params_to_use["response_type"] = "id_token token"
+                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param="request", url=f"{self.op_url}/module.php/oidc/authorization")
+                    
                 changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
                 self.changed_inputs.append(changed_value)
                 return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
             
-            case "authserver_authorize_request_invalid":
-                url, strategy, fuzzed_value = self._build_fuzzed_url(f"{self.op_url}/module.php/oidc/authorization", params, fuzz_param="request")
-                changed_value = {f'fuzzed_request_{strategy}': fuzzed_value}
-                self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'request ({strategy}) -> {fuzzed_value}'})
-            
+            case "authserver_authorize_implicit":
+                use_request_object = random.choice([True, False])
+                if use_request_object:
+                    params = {
+                        'client_id': self.parsed_params_implicit.get('client_id'),
+                        'redirect_uri': self.parsed_params_implicit.get('redirect_uri'),
+                        'response_type': self.parsed_params_implicit.get('response_type'),
+                        'state': self.parsed_params_implicit.get('state'),
+                        'scope': self.parsed_params_implicit.get('scope'),
+                        'nonce': self.parsed_params_implicit.get('nonce'),
+                    }
+                    params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
+                    request_object = encode_jwt(params)
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&scope=openid&request={request_object}"
+                else:
+                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&redirect_uri={self.parsed_params_implicit.get('redirect_uri')}&response_type={self.parsed_params_implicit.get('response_type')}&state={self.parsed_params_implicit.get('state')}&scope={self.parsed_params_implicit.get('scope')}&nonce={self.parsed_params_implicit.get('nonce')}"
+                return self._make_request('GET', url, parse_redirect_params=True, parse_implicit=True)
+
             case _:
                 # For non-fuzzed inputs, use parent implementation
                 self.changed_inputs.append({})  # No fuzzing for this step
