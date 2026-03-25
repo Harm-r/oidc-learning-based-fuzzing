@@ -568,6 +568,11 @@ class Fuzzer:
             "request_object": self._test_request_object,
             "request_object_with_normal_params": self._test_request_object_with_normal_params,
             "request_object_within_request_object": self._test_request_object_within_request_object,
+            "jwt_signature_validation": self._test_jwt_signature_validation,
+            "jwt_null_signature": self._test_jwt_null_signature,
+            "jwt_alg_none": self._test_jwt_alg_none,
+            "jwt_alg_confusion": self._test_jwt_alg_confusion,
+            "jwt_jwk_spoofing": self._test_jwt_jwk_spoofing,
             "type_juggling": self._test_type_juggling,
             "duplication_after": self._test_duplication_after,
             "duplication_before": self._test_duplication_before
@@ -604,13 +609,22 @@ class Fuzzer:
             fuzz_strategies.append(self._test_request_object)
             fuzz_strategies.append(self._test_request_object_with_normal_params)
             fuzz_strategies.append(self._test_request_object_within_request_object)
-        
+        if Prop.TOKEN in properties:
+            fuzz_strategies.append(self._test_jwt_signature_validation)
+            fuzz_strategies.append(self._test_jwt_null_signature)
+            fuzz_strategies.append(self._test_jwt_alg_none)
+            fuzz_strategies.append(self._test_jwt_alg_confusion)
+            fuzz_strategies.append(self._test_jwt_jwk_spoofing)
+
         if filter_strategies == "default":
             # Use the default strategies defined in the constructor
             fuzz_strategies = list(set(fuzz_strategies).intersection(self.fuzz_strategies))
         elif filter_strategies != "all":
             fuzz_strategies = list(set(fuzz_strategies).intersection(filter_strategies))
 
+        if not fuzz_strategies:
+            return f"{param_name}=invalid" + param_name, "invalid"  # No applicable strategies, return generic invalid value
+        
         strategy = random.choice(fuzz_strategies)
 
         return strategy(param_name, original_value), strategy.__name__
@@ -635,7 +649,7 @@ class Fuzzer:
         tmp_sul.pre()
 
         if param_name in ["nonce", "access_token", "id_token"]:
-            tmp_sul.step("client_sso_login")
+            tmp_sul.step("client_sso_login_implicit")
             tmp_sul.step("authserver_authorize_implicit")
             tmp_sul.step("authserver_login")
             tmp_sul.step("authserver_authorize_implicit")
@@ -752,7 +766,26 @@ class Fuzzer:
 
         return f"{param_name}={nested_request_object}"
 
-    def _test_token(self, param_name: str, original_value: str) -> str:
+    def _test_jwt_signature_validation(self, param_name: str, original_value: str) -> str:
+        return f"{param_name}={original_value[:-1]}X"  # Simple modification to break signature without changing length (to bypass naive checks)
+
+    def _test_jwt_null_signature(self, param_name: str, original_value: str) -> str:
+        parts = original_value.split('.')
+        if len(parts) != 3:
+            return f"{param_name}=invalidjwt"
+        return f"{param_name}={parts[0]}.{parts[1]}."
+
+    def _test_jwt_alg_none(self, param_name: str, original_value: str) -> str:
+        if not original_value.count('.') == 2:
+            return f"{param_name}=invalidjwt"
+        payload = decode_jwt(original_value)
+        token = encode_jwt(payload)
+        return f"{param_name}={token}"
+
+    def _test_jwt_alg_confusion(self, param_name: str, original_value: str) -> str:
+        pass
+
+    def _test_jwt_jwk_spoofing(self, param_name: str, original_value: str) -> str:
         pass
 
     def _test_type_juggling(self, param_name: str, original_value: str) -> str:
@@ -790,7 +823,7 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
         self.letter_params = {
             "client_callback_invalid": ["code", "state"],
             "client_callback_implicit_invalid": ["response_mode", "state", "access_token", "token_type", "expires_in", "id_token"],
-            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope", "nonce", "request"],
+            "authserver_authorize_invalid": ["client_id", "redirect_uri", "response_type", "scope", "request"],
         }
 
     def pre(self):
@@ -799,12 +832,26 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
     
     def post(self):
         super().post()
+
+    def _choose_fuzz_param(self, params: Dict[str, str]) -> Optional[str]:
+        """Choose a fuzz parameter only from currently allowed params."""
+        fuzz_params = {k: v for k, v in params.items() if k in self.fuzz_params}
+
+        weighted_choices = []
+        for key in fuzz_params:
+            props = OIDC_PARAMETER_PROPERTIES.get(key)
+            weight = len(props) if props else 1
+            weighted_choices.extend([key] * weight)
+
+        if not weighted_choices:
+            return None
+        return random.choice(weighted_choices)
     
     def _build_fuzzed_data(self, base_data: Dict[str, str], fuzz_param: Optional[str] = None, url: Optional[str] = None):
         query_string = '&'.join([f"{k}={v}" for k, v in base_data.items() if k != fuzz_param])
         
+        strategy = "no_fuzz"
         fuzzed_value = None
-        print(f"Building fuzzed data for parameter: {fuzz_param} with base data: {base_data}")
         if fuzz_param and fuzz_param in base_data:
             fuzzed_value, strategy = self.fuzzer.fuzz_parameter(fuzz_param, base_data[fuzz_param])
             if fuzzed_value:  # Only add if the strategy returns a non-empty value
@@ -816,90 +863,86 @@ class FuzzingSSPOIDCSUL(SSPOIDCSUL):
             return f"{url}?{query_string}", strategy, fuzzed_value
         return query_string, strategy, fuzzed_value
 
+    def _prepare_fuzzing(self, base_data: Dict[str, str], letter: Optional[str] = None, url: Optional[str] = None, fuzz_param: Optional[str] = None):
+        """Build fuzzed payload and metadata, or execute fallback when no fuzzing is possible."""
+        fuzz_param = self._choose_fuzz_param(base_data) if not fuzz_param else fuzz_param
+        if not fuzz_param:
+            fallback_result = self._fallback_without_fuzzing(letter) if letter else None
+            return None, fallback_result
+
+        fuzzed_data, strategy, fuzzed_value = self._build_fuzzed_data(base_data, fuzz_param=fuzz_param, url=url)
+        changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
+        fuzzed_header = f'{fuzz_param} ({strategy}) -> {fuzzed_value}'
+        print(fuzzed_header)
+        return (fuzzed_data, changed_value, fuzzed_header), None
+
+    def _fallback_without_fuzzing(self, letter):
+        self.changed_inputs.append({})  # No fuzzing for this step
+        return super().step(letter)
+
+    def _get_params_with_fallback(self, letter, implicit=False):
+        params = self.parsed_params_implicit if implicit else self.parsed_params
+        return {k: params.get(k, 'invalid'+k) for k in self.letter_params.get(letter, [])}
+
     def step(self, letter):
         """Execute a step and record the concrete fuzzed value."""
         changed_value = None
 
-        params = {}
-        for param in self.letter_params.get(letter, []):
-            params[param] = self.parsed_params.get(param, 'invalid'+param)
-        
-        fuzz_params = {k: v for k, v in params.items() if k in self.fuzz_params} # Only consider parameters that are in the fuzzing list
-        
-        weighted_choices = []
-        for key in fuzz_params:
-            props = OIDC_PARAMETER_PROPERTIES.get(key)
-            weighted_choices.extend([key] * len(props))  # Weight by number of properties
-        if weighted_choices:
-            fuzz_param = random.choice(weighted_choices)
-        else:
-            self.changed_inputs.append({})  # No fuzzing for this step
-            return super().step(letter)
-
         match letter:
             case "client_callback_invalid":
-                url, strategy, fuzzed_value = self._build_fuzzed_data(params, fuzz_param=fuzz_param, url=f"{self.rp_url}/module.php/authoauth2/linkback")
-                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
+                params = self._get_params_with_fallback(letter, implicit=False)
+                prepared, fallback_result = self._prepare_fuzzing(params, letter=letter, url=f"{self.rp_url}/module.php/authoauth2/linkback")
+                if fallback_result is not None:
+                    return fallback_result
+                url, changed_value, fuzzed_header = prepared
                 self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
+                return self._make_request('GET', url, headers={'FUZZED': fuzzed_header})
 
             case "client_callback_implicit_invalid":
+                params = self._get_params_with_fallback(letter, implicit=True)
                 url = f"{self.rp_url}/../mod_auth_openidc/redirect_uri"
                 params_with_response_mode = params.copy()
                 params_with_response_mode['response_mode'] = 'fragment'
-                fuzzed_data, strategy, fuzzed_value = self._build_fuzzed_data(params_with_response_mode, fuzz_param=fuzz_param)
-                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
+                prepared, fallback_result = self._prepare_fuzzing(params_with_response_mode, letter=letter)
+                if fallback_result is not None:
+                    return fallback_result
+                fuzzed_data, changed_value, fuzzed_header = prepared
                 self.changed_inputs.append(changed_value)
-                return self._make_request('POST', url, data=fuzzed_data, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
+                return self._make_request('POST', url, data=fuzzed_data, headers={'FUZZED': fuzzed_header})
     
             case "authserver_authorize_invalid":
                 use_request_object = random.choice([True, False])
                 use_implicit = random.choice([True, False])
 
+                params = self._get_params_with_fallback(letter, implicit=use_implicit)
+
                 match (use_request_object, use_implicit):
                     case (False, False):
                         params_to_use = {k: v for k, v in params.items() if k in ["client_id", "redirect_uri", "response_type", "state", "scope"]}
                         params_to_use["response_type"] = "code"
-                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param=fuzz_param, url=f"{self.op_url}/module.php/oidc/authorization")
+                        prepared, fallback_result = self._prepare_fuzzing(params_to_use, letter=letter, url=f"{self.op_url}/module.php/oidc/authorization")
                     case (False, True):
-                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "redirect_uri", "response_type", "state", "scope", "nonce"]}
+                        params_to_use = {k: v for k, v in params.items() if k in ["client_id", "redirect_uri", "response_type", "state", "scope"]}
                         params_to_use["response_type"] = "id_token token"
-                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param=fuzz_param, url=f"{self.op_url}/module.php/oidc/authorization")
+                        prepared, fallback_result = self._prepare_fuzzing(params_to_use, letter=letter, url=f"{self.op_url}/module.php/oidc/authorization")
                     case (True, False):
                         params_to_use = {k: v for k, v in params.items() if k in ["client_id", "scope", "request"]}
                         params_to_use["response_type"] = "code"
-                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param="request", url=f"{self.op_url}/module.php/oidc/authorization")
+                        prepared, fallback_result = self._prepare_fuzzing(params_to_use, letter=letter, url=f"{self.op_url}/module.php/oidc/authorization", fuzz_param="request")
                     case (True, True):
                         params_to_use = {k: v for k, v in params.items() if k in ["client_id", "scope", "request"]}
                         params_to_use["response_type"] = "id_token token"
-                        url, strategy, fuzzed_value = self._build_fuzzed_data(params_to_use, fuzz_param="request", url=f"{self.op_url}/module.php/oidc/authorization")
-                    
-                changed_value = {f'fuzzed_{fuzz_param}_{strategy}': fuzzed_value}
+                        prepared, fallback_result = self._prepare_fuzzing(params_to_use, letter=letter, url=f"{self.op_url}/module.php/oidc/authorization", fuzz_param="request")
+
+                if fallback_result is not None:
+                    return fallback_result
+                url, changed_value, fuzzed_header = prepared
                 self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': f'{fuzz_param} ({strategy}) -> {fuzzed_value}'})
-            
-            case "authserver_authorize_implicit":
-                use_request_object = random.choice([True, False])
-                if use_request_object:
-                    params = {
-                        'client_id': self.parsed_params_implicit.get('client_id'),
-                        'redirect_uri': self.parsed_params_implicit.get('redirect_uri'),
-                        'response_type': self.parsed_params_implicit.get('response_type'),
-                        'state': self.parsed_params_implicit.get('state'),
-                        'scope': self.parsed_params_implicit.get('scope'),
-                        'nonce': self.parsed_params_implicit.get('nonce'),
-                    }
-                    params = {k: unquote_plus(v) for k, v in params.items() if v is not None}
-                    request_object = encode_jwt(params)
-                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&scope=openid&request={request_object}"
-                else:
-                    url = f"{self.op_url}/module.php/oidc/authorization?client_id={self.parsed_params_implicit.get('client_id')}&redirect_uri={self.parsed_params_implicit.get('redirect_uri')}&response_type={self.parsed_params_implicit.get('response_type')}&state={self.parsed_params_implicit.get('state')}&scope={self.parsed_params_implicit.get('scope')}&nonce={self.parsed_params_implicit.get('nonce')}"
-                return self._make_request('GET', url, parse_redirect_params=True, parse_implicit=True)
+                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': fuzzed_header})
 
             case _:
                 # For non-fuzzed inputs, use parent implementation
-                self.changed_inputs.append({})  # No fuzzing for this step
-                return super().step(letter)
+                return self._fallback_without_fuzzing(letter)
 
 
 def learn_model(sul, expected_states=10, show_progress=True):
