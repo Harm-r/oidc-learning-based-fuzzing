@@ -24,10 +24,11 @@
         - [x] send both query parameters and request object, request object should have preference
         - [x] send request object within request object
     - [ ] authorization request during fuzzing just excludes state parameter now, why? include it again
-- [ ] Fuzz Implicit Flow with mod_auth_openidc
-    - [ ] Install mod_auth_openidc
-    - [ ] Learn implicit flow
-    - [ ] Fuzz implicit flow
+- [x] Fuzz Implicit Flow with mod_auth_openidc
+    - [x] Install mod_auth_openidc
+    - [x] Learn implicit flow
+    - [x] Fuzz implicit flow
+- [ ] Lots of mutations fall back to "invalid{param_name}". Add some filtering beforehand to exclude non-meaningful mutations.
 
 
 SimpleSAMLphp OIDC module test discovery endpoint: https://fuzz1.incubator.geant.org/simplesaml-op/module.php/oidc/.well-known/openid-configuration
