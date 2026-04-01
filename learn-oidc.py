@@ -138,6 +138,9 @@ class BaseSUL(SUL):
             for param in params.split('&'):
                 if '=' in param:
                     key, value = param.split('=', 1)
+                    if 'error' in key.lower():
+                        # Skip error parameters, as these are not relevant for the learning and would just add noise
+                        continue
                     if use_implicit:
                         self.parsed_params_implicit[key] = value
                     else:
@@ -534,6 +537,7 @@ class Prop(Enum):
     ONCE = auto()
     USER_SPECIFIC = auto()
     SESSION_SPECIFIC = auto()
+    FLOW_SPECIFIC = auto()
     URL = auto()
     REQUEST_OBJECT = auto()
     TOKEN = auto()
@@ -541,11 +545,11 @@ class Prop(Enum):
 
 # Parameter property mappings based on OAuth 2.0 / OIDC spec
 OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
-    "state": {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC},
+    "state": {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC, Prop.FLOW_SPECIFIC},
     "code": {Prop.MANDATORY, Prop.ONCE},
-    "client_id": {Prop.CONSTANT, Prop.MANDATORY},
-    "redirect_uri": {Prop.CONSTANT, Prop.URL},
-    "response_type": {Prop.CONSTANT, Prop.MANDATORY},
+    "client_id": {Prop.CONSTANT, Prop.MANDATORY, Prop.FLOW_SPECIFIC},
+    "redirect_uri": {Prop.CONSTANT, Prop.URL, Prop.FLOW_SPECIFIC},
+    "response_type": {Prop.CONSTANT, Prop.MANDATORY, Prop.FLOW_SPECIFIC},
     "scope": {Prop.CONSTANT, Prop.MANDATORY},
     "request": {Prop.REQUEST_OBJECT},
     "nonce": {Prop.ONCE, Prop.MANDATORY, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC},
@@ -570,6 +574,9 @@ class Fuzzer:
             "reuse": self._test_reuse_value,
             "other_user": self._test_other_user_value,
             "other_session": self._test_other_session_value,
+            "other_flow": self._test_other_flow_value,
+            "other_param": self._test_other_param_value,
+            "append_param": self._test_append_param_value,
             "url": self._test_url,
             "request_object": self._test_request_object,
             "request_object_with_normal_params": self._test_request_object_with_normal_params,
@@ -589,6 +596,7 @@ class Fuzzer:
             self._test_type_juggling,
             self._test_duplication_after,
             # self._test_duplication_before # Only last value is used by SSP OIDC module
+            self._test_other_param_value
         ]
     
     def fuzz_parameter(self, param_name: str, original_value: Optional[str], filter_strategies="default") -> Tuple[str, str]:
@@ -609,6 +617,8 @@ class Fuzzer:
             mutation_strategies.append(self._test_other_user_value)
         if Prop.SESSION_SPECIFIC in properties:
             mutation_strategies.append(self._test_other_session_value)
+        if Prop.FLOW_SPECIFIC in properties:
+            mutation_strategies.append(self._test_other_flow_value)
         if Prop.URL in properties:
             mutation_strategies.append(self._test_url)
         if Prop.REQUEST_OBJECT in properties:
@@ -699,6 +709,39 @@ class Fuzzer:
         else:
             raise ValueError(f"No other session value found for parameter: {param_name}")
     
+    def _test_other_flow_value(self, param_name: str, original_value: str) -> str:
+        """Change a parameter to one that is parsed from a different flow."""
+        if original_value in self.sul.parsed_params.values():
+            return f"{param_name}={self.sul.parsed_params_implicit.get(param_name, 'invalid' + param_name)}"
+        elif original_value in self.sul.parsed_params_implicit.values():
+            return f"{param_name}={self.sul.parsed_params.get(param_name, 'invalid' + param_name)}"
+        else:
+            return f"{param_name}=invalid{param_name}"
+
+    def _test_other_param_value(self, param_name: str, original_value: str) -> str:
+        """Change a parameter to a value from a different parameter."""
+        all_params = list(self.sul.parsed_params.values()) + list(self.sul.parsed_params_implicit.values())
+        if param_name == 'request':
+            # Don't use the request value from the other flow, as this would not trigger an error but just be treated as a different request object
+            if 'request' in self.sul.parsed_params_implicit:
+                all_params.remove(self.sul.parsed_params_implicit['request'])
+            if 'request' in self.sul.parsed_params:
+                all_params.remove(self.sul.parsed_params['request'])
+        other_values = [v for v in all_params if v != original_value and v is not None]
+        if other_values:
+            return f"{param_name}={random.choice(other_values)}"
+        else:
+            return f"{param_name}=invalid{param_name}"
+    
+    def _test_append_param_value(self, param_name: str, original_value: str) -> str:
+        """Append a different valid parameter to the original value."""
+        all_params = {**self.sul.parsed_params, **self.sul.parsed_params_implicit}
+        other_params = [f"{k}={v}" for k, v in all_params.items() if v != original_value and v is not None]
+        if other_params:
+            return f"{param_name}={original_value}&{random.choice(other_params)}"
+        else:
+            return f"{param_name}={original_value}&invalid=invalid{param_name}"
+
     def _test_url(self, param_name: str, original_value: str) -> str:
         """Fuzz URLS like the redirect_uri with various bypass techniques."""
         if not original_value:
@@ -1041,7 +1084,7 @@ def fuzz_model_state_by_state(fuzzing_sul, learned_model: MealyMachine, mutation
                     output = fuzzing_sul.step(letter)
                     expected_output = learned_model.step(letter)
                     if output != expected_output:
-                        cex = prefix + [letter]
+                        cex = list(prefix) + [letter]
                         print_cex(cex, fuzzing_sul, learned_model)
                         return  # Exit on first discrepancy found
                     if learned_model.current_state != state:
