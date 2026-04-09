@@ -1,0 +1,34 @@
+digraph "20260409_132937" {
+s0 [label="s0"];
+s1 [label="s1"];
+s2 [label="s2"];
+s3 [label="s3"];
+s4 [label="s4"];
+s0 -> s1 [label="client_sso_login/(302, 'Location: https://fuzz2.incubator.geant.org/idp/profile/oidc/authorize?response_type=code&scope=openid&client_id=demo_rp&state=<STATE>&redirect_uri=https%3A%2F%2Ffuzz2.incubator.geant.org%2Fmod_auth_openidc%2Fredirect_uri&nonce=<NONCE>')"];
+s0 -> s0 [label="client_callback/Error"];
+s0 -> s0 [label="client_callback_invalid/Error"];
+s0 -> s0 [label="authserver_authorize/Error"];
+s0 -> s0 [label="authserver_authorize_invalid/Error"];
+s1 -> s1 [label="client_sso_login/(302, 'Location: https://fuzz2.incubator.geant.org/idp/profile/oidc/authorize?response_type=code&scope=openid&client_id=demo_rp&state=<STATE>&redirect_uri=https%3A%2F%2Ffuzz2.incubator.geant.org%2Fmod_auth_openidc%2Fredirect_uri&nonce=<NONCE>')"];
+s1 -> s4 [label="client_callback/Error"];
+s1 -> s1 [label="client_callback_invalid/Error"];
+s1 -> s2 [label="authserver_authorize/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/redirect_uri?code=<CODE>&state=<STATE>')"];
+s1 -> s1 [label="authserver_authorize_invalid/Error"];
+s2 -> s1 [label="client_sso_login/(302, 'Location: https://fuzz2.incubator.geant.org/idp/profile/oidc/authorize?response_type=code&scope=openid&client_id=demo_rp&state=<STATE>&redirect_uri=https%3A%2F%2Ffuzz2.incubator.geant.org%2Fmod_auth_openidc%2Fredirect_uri&nonce=<NONCE>')"];
+s2 -> s3 [label="client_callback/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/test-oidc.php')"];
+s2 -> s2 [label="client_callback_invalid/Error"];
+s2 -> s2 [label="authserver_authorize/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/redirect_uri?code=<CODE>&state=<STATE>')"];
+s2 -> s2 [label="authserver_authorize_invalid/Error"];
+s3 -> s3 [label="client_sso_login/Error"];
+s3 -> s3 [label="client_callback/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/test-oidc.php')"];
+s3 -> s3 [label="client_callback_invalid/Error"];
+s3 -> s3 [label="authserver_authorize/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/redirect_uri?code=<CODE>&state=<STATE>')"];
+s3 -> s3 [label="authserver_authorize_invalid/Error"];
+s4 -> s1 [label="client_sso_login/(302, 'Location: https://fuzz2.incubator.geant.org/idp/profile/oidc/authorize?response_type=code&scope=openid&client_id=demo_rp&state=<STATE>&redirect_uri=https%3A%2F%2Ffuzz2.incubator.geant.org%2Fmod_auth_openidc%2Fredirect_uri&nonce=<NONCE>')"];
+s4 -> s4 [label="client_callback/Error"];
+s4 -> s4 [label="client_callback_invalid/Error"];
+s4 -> s4 [label="authserver_authorize/(302, 'Location: https://fuzz2.incubator.geant.org/mod_auth_openidc/redirect_uri?code=<CODE>&state=<STATE>')"];
+s4 -> s4 [label="authserver_authorize_invalid/Error"];
+__start0 [shape=none, label=""];
+__start0 -> s0 [label=""];
+}

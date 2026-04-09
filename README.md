@@ -24,6 +24,7 @@
         - [x] send both query parameters and request object, request object should have preference
         - [x] send request object within request object
     - [ ] authorization request during fuzzing just excludes state parameter now, why? include it again
+    - [ ] Smarter scope fuzzing (and some other parameters)
 - [x] Fuzz Implicit Flow with mod_auth_openidc
     - [x] Install mod_auth_openidc
     - [x] Learn implicit flow
