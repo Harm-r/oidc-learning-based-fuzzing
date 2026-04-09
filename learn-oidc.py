@@ -796,12 +796,21 @@ class Fuzzer:
         }
         self.mutation_strategies = [self.strategies[s] for s in mutation_strategies] if mutation_strategies else list(self.strategies.values())
 
-        self.default_strategies = [
-            self._test_type_juggling,
-            self._test_duplication_after,
-            # self._test_duplication_before # Only last value is used by SSP OIDC module
-            self._test_other_param_value
-        ]
+        if type(self.sul) == SSPOIDCSUL:
+            self.default_strategies = [
+                self._test_type_juggling,
+                self._test_duplication_after,
+                # self._test_duplication_before # Only last value is used by SSP OIDC module
+                self._test_other_param_value
+            ]
+        else:
+            self.default_strategies = [
+                # self._test_type_juggling, # No type juggling in Shib
+                self._test_duplication_after,
+                # self._test_duplication_before # Only last value is used by SSP OIDC module
+                self._test_other_param_value
+            ]
+
     
     def fuzz_parameter(self, param_name: str, original_value: Optional[str], filter_strategies="default") -> Tuple[str, str]:
         properties = OIDC_PARAMETER_PROPERTIES.get(param_name)
@@ -1317,7 +1326,7 @@ class FuzzingShibOIDCSUL(ShibOIDCSUL):
                     return fallback_result
                 url, changed_value, fuzzed_header = prepared
                 self.changed_inputs.append(changed_value)
-                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': fuzzed_header})
+                return self._make_request('GET', url, parse_redirect_params=True, headers={'FUZZED': fuzzed_header}, auth=(self.user, self.password))
 
             case _:
                 # For non-fuzzed inputs, use parent implementation
@@ -1384,7 +1393,7 @@ def fuzz_model(fuzzing_sul, learned_model):
     else:
         logging.info("No discrepancies found during fuzzing walks")
 
-def fuzz_model_state_by_state(fuzzing_sul, learned_model: MealyMachine, mutations_per_letter=20):
+def fuzz_model_state_by_state(fuzzing_sul: BaseSUL, learned_model: MealyMachine, mutations_per_letter=20):
     """
     Fuzzes each state of the learned_model individually.
     1. For each state, extract the prefix that leads to it, and walk to it.
@@ -1411,6 +1420,7 @@ def fuzz_model_state_by_state(fuzzing_sul, learned_model: MealyMachine, mutation
                 for _ in range(mutations_per_letter):  # Fuzz each input multiple times
                     progress.update(1)
                     fuzzing_sul.changed_inputs = []  # Reset changed inputs tracking
+                    saved_cookies = fuzzing_sul.s.cookies.copy()  # Save session to restore after each mutation
                     output = fuzzing_sul.step(letter)
                     expected_output = learned_model.step(letter)
                     if output != expected_output:
@@ -1424,6 +1434,7 @@ def fuzz_model_state_by_state(fuzzing_sul, learned_model: MealyMachine, mutation
                         for input in prefix:
                             fuzzing_sul.step(input)
                         learned_model.current_state = state  # Force reset to target state
+                    fuzzing_sul.s.cookies = saved_cookies  # Restore session to avoid unintended state changes
 
         fuzzing_sul.post()
 
