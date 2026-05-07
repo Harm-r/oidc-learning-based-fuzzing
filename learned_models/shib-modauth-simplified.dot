@@ -1,0 +1,34 @@
+digraph "shib-modauth-simplified" {
+s0 [label="s0"];
+s1 [label="s1"];
+s2 [label="s2"];
+s3 [label="s3"];
+s4 [label="s4"];
+s0 -> s1 [label="S/A"];
+s0 -> s0 [label="C/E"];
+s0 -> s0 [label="CI/E"];
+s0 -> s0 [label="A/E"];
+s0 -> s0 [label="AI/E"];
+s1 -> s1 [label="S/A"];
+s1 -> s4 [label="C/E"];
+s1 -> s1 [label="AI/E"];
+s1 -> s2 [label="A/R"];
+s1 -> s1 [label="AI/E"];
+s2 -> s1 [label="S/A"];
+s2 -> s3 [label="C/H"];
+s2 -> s2 [label="CI/E"];
+s2 -> s2 [label="A/R"];
+s2 -> s2 [label="AI/E"];
+s3 -> s3 [label="S/E"];
+s3 -> s3 [label="C/H"];
+s3 -> s3 [label="CI/E"];
+s3 -> s3 [label="A/R"];
+s3 -> s3 [label="AI/E"];
+s4 -> s1 [label="S/A"];
+s4 -> s4 [label="C/E"];
+s4 -> s4 [label="CI/E"];
+s4 -> s4 [label="A/A"];
+s4 -> s4 [label="AI/E"];
+__start0 [shape=none, label=""];
+__start0 -> s0 [label=""];
+}
