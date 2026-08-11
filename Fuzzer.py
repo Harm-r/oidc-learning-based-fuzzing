@@ -22,7 +22,7 @@ class Prop(Enum):
 
 # Parameter property mappings based on OAuth 2.0 / OIDC spec
 OIDC_PARAMETER_PROPERTIES: Dict[str, Set[Prop]] = {
-    "state": {Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC, Prop.FLOW_SPECIFIC},
+    "state": {Prop.MANDATORY, Prop.ONCE, Prop.USER_SPECIFIC, Prop.SESSION_SPECIFIC, Prop.FLOW_SPECIFIC},
     "code": {Prop.MANDATORY, Prop.ONCE},
     "client_id": {Prop.CONSTANT, Prop.MANDATORY, Prop.FLOW_SPECIFIC},
     "redirect_uri": {Prop.CONSTANT, Prop.URL, Prop.FLOW_SPECIFIC},
@@ -74,14 +74,16 @@ class Fuzzer:
                 self._test_type_juggling,
                 self._test_duplication_after,
                 # self._test_duplication_before # Only last value is used by SSP OIDC module
-                self._test_other_param_value
+                self._test_other_param_value,
+                self._test_append_param_value
             ]
         else:
             self.default_strategies = [
                 # self._test_type_juggling, # No type juggling in Shib
                 self._test_duplication_after,
                 # self._test_duplication_before # Only last value is used by SSP OIDC module
-                self._test_other_param_value
+                self._test_other_param_value,
+                self._test_append_param_value
             ]
 
     
