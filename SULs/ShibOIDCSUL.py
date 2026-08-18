@@ -98,7 +98,6 @@ class ShibOIDCSUL(BaseSUL):
                 out = self._make_request('GET', url)
                 if out != "Error":
                     self.used_params['code'] = self.parsed_params.get('code')
-                    # TODO: should the state also be invalidated for errors?
                     self.used_params['state'] = self.parsed_params.get('state')
                 return out
             
@@ -108,7 +107,6 @@ class ShibOIDCSUL(BaseSUL):
             
             # case "client_callback_error":
             #     url = f"{self.rp_url}/redirect_uri?error=error&state={self.parsed_params.get('state')}"
-            #     # TODO: should the state be invalidated here? SSP OIDC seems to accept it
             #     # self.used_params['state'] = self.parsed_params.get('state')
             #     return self._make_request('GET', url)
             

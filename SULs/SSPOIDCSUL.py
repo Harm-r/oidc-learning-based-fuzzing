@@ -10,15 +10,15 @@ class SSPOIDCSUL(BaseSUL):
     def __init__(self, op_url, rp_url, proxy=None, user="student", password="studentpass"):
         super().__init__(op_url, rp_url, proxy, user, password)
         self.input_al = ["client_sso_login",
-            "client_sso_login_implicit",
+            # "client_sso_login_implicit",
             "client_callback", 
             "client_callback_invalid", 
             # "client_callback_error",
-            "client_callback_implicit",
-            "client_callback_implicit_invalid",
+            # "client_callback_implicit",
+            # "client_callback_implicit_invalid",
             "authserver_authorize",
             "authserver_authorize_invalid",
-            "authserver_authorize_implicit",
+            # "authserver_authorize_implicit",
             # "authserver_authorize_request",
             # "authserver_authorize_request_invalid",
             "authserver_login",
@@ -98,7 +98,6 @@ class SSPOIDCSUL(BaseSUL):
                 out = self._make_request('GET', url)
                 if out != "Error":
                     self.used_params['code'] = self.parsed_params.get('code')
-                    # TODO: should the state also be invalidated for errors?
                     self.used_params['state'] = self.parsed_params.get('state')
                 return out
             
@@ -108,7 +107,6 @@ class SSPOIDCSUL(BaseSUL):
             
             # case "client_callback_error":
             #     url = f"{self.rp_url}/module.php/authoauth2/linkback?error=error&state={self.parsed_params.get('state')}"
-            #     # TODO: should the state be invalidated here? SSP OIDC seems to accept it
             #     # self.used_params['state'] = self.parsed_params.get('state')
             #     return self._make_request('GET', url)
             

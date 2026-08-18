@@ -53,7 +53,7 @@ class Fuzzer:
             "other_session": self._test_other_session_value,
             "other_flow": self._test_other_flow_value,
             "other_param": self._test_other_param_value,
-            "append_param": self._test_append_param_value,
+            # "append_param": self._test_append_param_value,
             "url": self._test_url,
             "request_object": self._test_request_object,
             "request_object_with_normal_params": self._test_request_object_with_normal_params,
@@ -75,7 +75,7 @@ class Fuzzer:
                 self._test_duplication_after,
                 # self._test_duplication_before # Only last value is used by SSP OIDC module
                 self._test_other_param_value,
-                self._test_append_param_value
+                # self._test_append_param_value
             ]
         else:
             self.default_strategies = [
@@ -83,7 +83,7 @@ class Fuzzer:
                 self._test_duplication_after,
                 # self._test_duplication_before # Only last value is used by SSP OIDC module
                 self._test_other_param_value,
-                self._test_append_param_value
+                # self._test_append_param_value
             ]
 
     
@@ -221,14 +221,14 @@ class Fuzzer:
         else:
             return f"{param_name}=invalid{param_name}"
     
-    def _test_append_param_value(self, param_name: str, original_value: str) -> str:
-        """Append a different valid parameter to the original value."""
-        all_params = {**self.sul.parsed_params, **self.sul.parsed_params_implicit}
-        other_params = [f"{k}={v}" for k, v in all_params.items() if v != original_value and v is not None]
-        if other_params:
-            return f"{param_name}={original_value}&{random.choice(other_params)}"
-        else:
-            return f"{param_name}={original_value}&invalid=invalid{param_name}"
+    # def _test_append_param_value(self, param_name: str, original_value: str) -> str:
+    #     """Append a different valid parameter to the original value."""
+    #     all_params = {**self.sul.parsed_params, **self.sul.parsed_params_implicit}
+    #     other_params = [f"{k}={v}" for k, v in all_params.items() if v != original_value and v is not None]
+    #     if other_params:
+    #         return f"{param_name}={original_value}&{random.choice(other_params)}"
+    #     else:
+    #         return f"{param_name}={original_value}&invalid=invalid{param_name}"
 
     def _test_url(self, param_name: str, original_value: str) -> str:
         """Fuzz URLS like the redirect_uri with various bypass techniques."""

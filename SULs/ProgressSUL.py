@@ -1,4 +1,4 @@
-import tqdm
+from tqdm import tqdm
 from aalpy.base import SUL
 
 class ProgressSUL(SUL):

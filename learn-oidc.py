@@ -186,7 +186,7 @@ if __name__ == "__main__":
 
     if not args.only_learn:
         if args.target == 'oauth':
-            fuzzing_sul = FuzzingSUL(args.op_url, args.rp_url, proxy=args.proxy)
+            fuzzing_sul = FuzzingSUL(args.op_url, args.rp_url, proxy=args.proxy, fuzz_params=args.fuzz_params, mutation_strategies=args.mutation_strategies)
         elif args.target == 'sspoidc':
             fuzzing_sul = FuzzingSSPOIDCSUL(args.op_url, args.rp_url, proxy=args.proxy, fuzz_params=args.fuzz_params, mutation_strategies=args.mutation_strategies)
         elif args.target == 'shiboidc':
